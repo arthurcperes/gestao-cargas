@@ -1,0 +1,656 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="description"
+    content="Sistema de gestão de cargas, motoristas, caminhões, pagamentos e documentos." />
+
+  <title>Gestão de Cargas | Sistema do Seu Avô</title>
+
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+
+  <link rel="stylesheet" href="style.css" />
+</head>
+
+<body>
+
+  <!-- TOPO -->
+  <header class="topbar">
+
+    <div class="brand-area">
+      <div class="brand-logo" aria-hidden="true">GC</div>
+
+      <div>
+        <h1>Gestão de Cargas</h1>
+        <p>Sistema em nuvem para cargas, motoristas e pagamentos</p>
+      </div>
+    </div>
+
+    <div class="topbar-actions">
+      <button type="button" id="btnLogin">Entrar</button>
+    </div>
+
+  </header>
+
+  <!-- MENU -->
+  <nav class="page-tabs" aria-label="Navegação rápida do sistema">
+
+    <a href="#pesquisaHub">Início</a>
+    <a href="#cargasHub">Cargas</a>
+    <a href="#motoristasHub">Motoristas</a>
+    <a href="#caminhoesHub">Caminhões</a>
+    <a href="#viagensHub">Viagens</a>
+    <a href="#financeiroHub">Financeiro</a>
+    <a href="#documentosHub">Documentos</a>
+    <a href="#registrosHub">Registros</a>
+
+  </nav>
+
+  <main class="page">
+
+    <!-- HERO + PESQUISA -->
+    <section class="hero card" id="pesquisaHub">
+
+      <div>
+        <span class="badge">Painel principal</span>
+
+        <h2>Controle tudo em um só lugar</h2>
+
+        <p>
+          Cadastre cargas, vincule motoristas, controle documentos,
+          adiantamentos, saldos, observações e pesquisas rápidas.
+        </p>
+      </div>
+
+      <form class="search-bar" id="searchForm">
+
+        <label class="sr-only" for="searchInput">
+          Pesquisar registros
+        </label>
+
+        <input id="searchInput" name="search" type="search"
+          placeholder="Pesquisar por nome, empresa, cidade, placa ou carga" autocomplete="off" />
+
+        <button type="submit">
+          Pesquisar
+        </button>
+
+        <button type="button" id="clearSearchBtn" class="secondary-btn">
+          Limpar
+        </button>
+
+      </form>
+
+      <p class="search-status" id="searchStatus">
+        Mostrando todos os registros.
+      </p>
+
+      <!-- AUTOCOMPLETE -->
+      <div class="search-results" id="searchResults"></div>
+
+    </section>
+
+    <!-- INDICADORES -->
+    <section class="stats-grid" aria-label="Resumo rápido">
+
+      <article class="card stat-card">
+        <span class="stat-label">Cargas em aberto</span>
+        <strong id="statOpenLoads">0</strong>
+      </article>
+
+      <article class="card stat-card">
+        <span class="stat-label">Viagens ativas</span>
+        <strong id="statActiveTrips">0</strong>
+      </article>
+
+      <article class="card stat-card">
+        <span class="stat-label">Pendências financeiras</span>
+        <strong id="statPendingFinance">0</strong>
+      </article>
+
+      <article class="card stat-card">
+        <span class="stat-label">Documentos a vencer</span>
+        <strong id="statDocsExpiring">0</strong>
+      </article>
+
+    </section>
+
+    <!-- CARGAS + MOTORISTAS -->
+    <section class="grid-two">
+
+      <!-- CARGAS -->
+      <article class="card" id="cargasHub">
+
+        <div class="section-header">
+          <h2>Cadastro rápido de carga</h2>
+
+          <p>
+            Registre as informações principais da oportunidade.
+          </p>
+        </div>
+
+        <form id="loadForm" class="form-grid">
+
+          <label>
+            Empresa
+            <input type="text" name="empresa" placeholder="Nome da empresa" />
+          </label>
+
+          <label>
+            Origem
+            <input type="text" name="origem" placeholder="Cidade de saída" />
+          </label>
+
+          <label>
+            Destino
+            <input type="text" name="destino" placeholder="Cidade de destino" />
+          </label>
+
+          <label>
+            Peso
+            <input type="text" name="peso" placeholder="Ex.: 28 toneladas" />
+          </label>
+
+          <label>
+            Valor do frete
+            <input type="text" name="valorFrete" placeholder="R$ 0,00" />
+          </label>
+
+          <label>
+            Tipo de carga
+            <input type="text" name="tipoCarga"
+              placeholder="Ex.: granel, peça, pesada" />
+          </label>
+
+          <label class="full-width">
+            Observações
+
+            <textarea name="observacoesCarga" rows="4"
+              placeholder="Medidas especiais, largura, altura, exigências, rastreador..."></textarea>
+          </label>
+
+          <div class="full-width form-actions">
+            <button type="submit">Salvar carga</button>
+          </div>
+
+        </form>
+
+      </article>
+
+      <!-- MOTORISTAS -->
+      <article class="card" id="motoristasHub">
+
+        <div class="section-header">
+          <h2>Cadastro rápido de motorista</h2>
+
+          <p>
+            Guarde os dados que mais importam para consulta rápida.
+          </p>
+        </div>
+
+        <form id="driverForm" class="form-grid">
+
+          <label>
+            Nome
+            <input type="text" name="nomeMotorista"
+              placeholder="Nome completo" />
+          </label>
+
+          <label>
+            Telefone
+            <input type="tel" name="telefoneMotorista"
+              placeholder="(11) 99999-9999" />
+          </label>
+
+          <label>
+            PIX
+            <input type="text" name="pixMotorista"
+              placeholder="Chave PIX" />
+          </label>
+
+          <label>
+            CNH
+            <input type="text" name="cnhMotorista"
+              placeholder="Número da CNH" />
+          </label>
+
+          <label>
+            Curso MOPP
+
+            <select name="moppMotorista">
+              <option value="sim">Sim</option>
+              <option value="nao">Não</option>
+            </select>
+          </label>
+
+          <label>
+            Vencimento CNH
+            <input type="date" name="vencimentoCnh" />
+          </label>
+
+          <label class="full-width">
+            Observações
+
+            <textarea name="observacoesMotorista" rows="4"
+              placeholder="Acordos, preferências, detalhes importantes..."></textarea>
+          </label>
+
+          <div class="full-width form-actions">
+            <button type="submit">Salvar motorista</button>
+          </div>
+
+        </form>
+
+      </article>
+
+    </section>
+
+    <!-- CAMINHÕES + VIAGENS -->
+    <section class="grid-two">
+
+      <!-- CAMINHÕES -->
+      <article class="card" id="caminhoesHub">
+
+        <div class="section-header">
+          <h2>Cadastro rápido de caminhão</h2>
+
+          <p>
+            Vincule cavalo, carreta e documentos.
+          </p>
+        </div>
+
+        <form id="truckForm" class="form-grid">
+
+          <label>
+            Placa do cavalo
+            <input type="text" name="placaCavalo"
+              placeholder="ABC1D23" />
+          </label>
+
+          <label>
+            Placa da carreta
+            <input type="text" name="placaCarreta"
+              placeholder="XYZ4E56" />
+          </label>
+
+          <label>
+            ANTT / RNTRC
+            <input type="text" name="antt"
+              placeholder="Número de registro" />
+          </label>
+
+          <label>
+            Tipo
+            <input type="text" name="tipoCaminhao"
+              placeholder="Ex.: carreta, bitrem" />
+          </label>
+
+          <label>
+            Vencimento documento
+            <input type="date" name="vencimentoDocumento" />
+          </label>
+
+          <label class="full-width">
+            Observações
+
+            <textarea name="observacoesCaminhao" rows="4"
+              placeholder="Detalhes do veículo e exigências."></textarea>
+          </label>
+
+          <div class="full-width form-actions">
+            <button type="submit">Salvar caminhão</button>
+          </div>
+
+        </form>
+
+      </article>
+
+      <!-- VIAGENS -->
+      <article class="card" id="viagensHub">
+
+        <div class="section-header">
+          <h2>Nova viagem / ordem de carregamento</h2>
+
+          <p>
+            Uma carga ligada a um motorista e a um caminhão.
+          </p>
+        </div>
+
+        <form id="tripForm" class="form-grid">
+
+          <label>
+            Carga
+
+            <select name="cargaViagem" id="tripLoadSelect">
+              <option value="">Selecione uma carga</option>
+            </select>
+          </label>
+
+          <label>
+            Motorista
+
+            <select name="motoristaViagem" id="tripDriverSelect">
+              <option value="">Selecione um motorista</option>
+            </select>
+          </label>
+
+          <label>
+            Caminhão
+
+            <select name="caminhaoViagem" id="tripTruckSelect">
+              <option value="">Selecione um caminhão</option>
+            </select>
+          </label>
+
+          <label>
+            Valor do frete
+            <input type="text" name="valorFreteViagem" id="tripFreightValue" placeholder="R$ 0,00" />
+          </label>
+
+          <label>
+            Valor combinado com motorista
+            <input type="text" name="valorMotorista"
+              placeholder="R$ 0,00" />
+          </label>
+
+          <label>
+            Adiantamento
+            <input type="text" name="adiantamento"
+              placeholder="R$ 0,00" />
+          </label>
+
+          <label>
+            Status
+
+            <select name="statusViagem">
+              <option>Planejada</option>
+              <option>Em andamento</option>
+              <option>Carregada</option>
+              <option>Finalizada</option>
+            </select>
+          </label>
+
+          <!-- AUTOPREENCHIMENTO -->
+          <div class="full-width auto-fill-preview">
+
+            <div id="tripAutoFillLoad"></div>
+
+            <div id="tripAutoFillDriver"></div>
+
+            <div id="tripAutoFillTruck"></div>
+
+          </div>
+
+          <!-- RESUMO FINANCEIRO -->
+          <div class="full-width finance-summary" aria-label="Resumo financeiro da viagem">
+
+            <div class="finance-summary-item">
+              <strong>Frete da viagem</strong>
+              <div id="tripFinancialFreight">Selecione uma carga</div>
+            </div>
+
+            <div class="finance-summary-item">
+              <strong>Combinado com motorista</strong>
+              <div id="tripFinancialCombined">Digite o valor combinado</div>
+            </div>
+
+            <div class="finance-summary-item">
+              <strong>Adiantamento</strong>
+              <div id="tripFinancialAdvance">Digite o adiantamento</div>
+            </div>
+
+            <div class="finance-summary-item">
+              <strong>Saldo a pagar</strong>
+              <div id="tripFinancialBalance">—</div>
+            </div>
+
+            <div class="finance-summary-item">
+              <strong>Lucro da viagem</strong>
+              <div id="tripFinancialProfit">—</div>
+            </div>
+
+          </div>
+
+          <label class="full-width">
+            Observações da viagem
+
+            <textarea name="observacoesViagem" rows="4"
+              placeholder="Diária, ajudante, acordos do WhatsApp, rastreador, notas..."></textarea>
+          </label>
+
+          <div class="full-width form-actions">
+            <button type="submit">Salvar viagem</button>
+          </div>
+
+        </form>
+
+      </article>
+
+    </section>
+
+    <!-- FINANCEIRO + DOCUMENTOS -->
+    <section class="grid-two" id="financeiroDocumentosHub">
+
+      <!-- FINANCEIRO -->
+      <article class="card" id="financeiroHub">
+
+        <div class="section-header">
+          <h2>Financeiro</h2>
+
+          <p>
+            Controle adiantamentos, saldos e recebimentos.
+          </p>
+        </div>
+
+        <div class="grid-two-inner">
+
+          <form id="paymentForm" class="form-grid">
+
+            <label>
+              Viagem
+
+              <select name="viagemPagamento"
+                id="paymentTripSelect">
+                <option value="">Selecione uma viagem</option>
+              </select>
+            </label>
+
+            <label>
+              Tipo de pagamento
+
+              <select name="tipoPagamento">
+                <option>Adiantamento</option>
+                <option>Saldo motorista</option>
+                <option>Diária</option>
+                <option>Ajuda de custo</option>
+                <option>Recebimento cliente</option>
+              </select>
+            </label>
+
+            <label>
+              Valor
+              <input type="text" name="valorPagamento"
+                placeholder="R$ 0,00" />
+            </label>
+
+            <label>
+              Data
+              <input type="date" name="dataPagamento" />
+            </label>
+
+            <label class="full-width">
+              Observação
+
+              <textarea name="observacaoPagamento" rows="3"
+                placeholder="Detalhe do pagamento ou recebimento."></textarea>
+            </label>
+
+            <div class="full-width form-actions">
+              <button type="submit">Salvar movimento</button>
+            </div>
+
+          </form>
+
+        </div>
+
+      </article>
+
+      <!-- DOCUMENTOS -->
+      <article class="card" id="documentosHub">
+
+        <div class="section-header">
+          <h2>Documentos</h2>
+
+          <p>
+            Guarde anexos e arquivos importantes.
+          </p>
+        </div>
+
+        <form id="documentForm" class="form-grid">
+
+          <label>
+            Tipo
+
+            <select name="tipoDocumento">
+              <option>CNH</option>
+              <option>Documento do cavalo</option>
+              <option>Documento da carreta</option>
+              <option>ANTT</option>
+              <option>Nota fiscal</option>
+              <option>Outro</option>
+            </select>
+          </label>
+
+          <label>
+            Relacionado a
+
+            <select name="relacionadoDocumento">
+              <option>Motorista</option>
+              <option>Caminhão</option>
+              <option>Viagem</option>
+              <option>Carga</option>
+            </select>
+          </label>
+
+          <label>
+            Vencimento
+            <input type="date" name="vencimentoDocumentoSistema" />
+          </label>
+
+          <label class="full-width">
+            Arquivo
+            <input type="file" name="arquivoDocumento" />
+          </label>
+
+          <label class="full-width">
+            Observações
+
+            <textarea name="observacoesDocumento" rows="3"
+              placeholder="Detalhes do documento."></textarea>
+          </label>
+
+          <div class="full-width form-actions">
+            <button type="submit">Enviar documento</button>
+          </div>
+
+        </form>
+
+      </article>
+
+    </section>
+
+    <!-- REGISTROS -->
+    <section class="card records-section" id="registrosHub">
+
+      <div class="section-header">
+        <h2>Registros recentes</h2>
+
+        <p>
+          Histórico completo do sistema.
+        </p>
+      </div>
+
+      <!-- LISTA -->
+      <div class="records-list" id="recentRecords">
+
+        <article class="record-item">
+
+          <strong>Sem registros ainda</strong>
+
+          <p>
+            Quando você salvar as informações,
+            elas aparecerão aqui.
+          </p>
+
+        </article>
+
+      </div>
+
+    </section>
+
+  </main>
+
+  <!-- MODAL -->
+  <div class="modal-overlay hidden" id="recordModalOverlay">
+
+    <div class="record-modal">
+
+      <div class="record-modal-header">
+
+        <h3 id="modalTitle">
+          Registro
+        </h3>
+
+        <button type="button"
+          id="closeModalBtn"
+          class="close-modal-btn">
+          ✕
+        </button>
+
+      </div>
+
+      <div class="record-modal-content"
+        id="recordModalContent">
+      </div>
+
+      <div class="record-modal-actions">
+
+        <button type="button"
+          id="editRecordBtn"
+          class="secondary-btn">
+          ✏️ Editar
+        </button>
+
+        <button type="button"
+          id="saveEditBtn"
+          class="hidden">
+          Salvar edição
+        </button>
+
+        <button type="button"
+          id="cancelEditBtn"
+          class="secondary-btn hidden">
+          Cancelar
+        </button>
+
+        <button type="button"
+          id="deleteRecordBtn"
+          class="danger-btn">
+          🗑️ Apagar
+        </button>
+
+      </div>
+
+    </div>
+
+  </div>
+
+  <!-- SCRIPT -->
+  <script src="script.js"></script>
+
+</body>
+
+</html>
