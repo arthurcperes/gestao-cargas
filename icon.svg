@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Gestão de Cargas">
+  <rect width="512" height="512" rx="112" fill="#1d4ed8"/>
+  <path d="M118 158h186c21 0 38 17 38 38v108h24c16 0 28 12 28 28v22h-18c-4 29-29 52-59 52s-55-23-59-52H205c-4 29-29 52-59 52s-55-23-59-52h-9v-135c0-34 27-61 61-61h-22zm87 196a35 35 0 1 0-70 0 35 35 0 0 0 70 0zm147-50h22v-20h-30l-28-43h-44v63h80zm-35 50a35 35 0 1 0 0 70 35 35 0 0 0 0-70z" fill="#fff"/>
+  <text x="256" y="230" text-anchor="middle" font-family="Arial, sans-serif" font-size="94" font-weight="700" fill="#1d4ed8">GC</text>
+</svg>

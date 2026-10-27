@@ -4,6 +4,9 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="theme-color" content="#1d4ed8" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="default" />
   <meta name="description"
     content="Sistema de gestão de cargas, motoristas, caminhões, pagamentos e documentos." />
 
@@ -13,9 +16,172 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 
   <link rel="stylesheet" href="style.css" />
+  <link rel="manifest" href="manifest.webmanifest" />
+  <link rel="apple-touch-icon" href="icon.svg" />
 </head>
 
-<body>
+<body class="login-open">
+
+  <!-- ACESSO INICIAL: o JavaScript libera o sistema após autenticação. -->
+  <div class="login-overlay" id="loginOverlay" role="dialog" aria-modal="true"
+    aria-labelledby="loginTitle" aria-describedby="loginDescription">
+
+    <section class="login-panel">
+
+      <div class="login-card">
+        <div class="login-brand" aria-hidden="true">GC</div>
+
+        <span class="login-kicker">Acesso protegido</span>
+
+        <h2 id="loginTitle">Entre para abrir a caderneta</h2>
+
+        <p id="loginDescription">
+          Use seu e-mail e senha para acessar somente os seus registros. Se ainda não tiver
+          acesso, crie sua conta e confirme o e-mail para vincular os dados à nuvem.
+        </p>
+
+        <form id="loginForm" class="login-form">
+
+          <label for="loginEmail">
+            E-mail
+            <input id="loginEmail" name="email" type="email" inputmode="email"
+              autocomplete="email" placeholder="seuemail@exemplo.com" required />
+          </label>
+
+          <label for="loginPassword">
+            Senha
+            <input id="loginPassword" name="password" type="password"
+              autocomplete="current-password" placeholder="Sua senha" required />
+          </label>
+
+          <p class="login-status" id="loginStatus" role="status" aria-live="polite">
+            Informe seus dados para continuar.
+          </p>
+
+          <div class="login-actions">
+            <button type="submit" id="loginSubmitBtn" class="login-submit-btn">
+              Entrar
+            </button>
+
+            <button type="button" id="signupBtn" class="login-signup-btn">
+              Criar conta
+            </button>
+          </div>
+
+          <button type="button" id="forgotPasswordBtn" class="login-link-btn">
+            Esqueci minha senha
+          </button>
+
+        </form>
+
+        <form id="passwordResetRequestForm" class="login-form hidden">
+
+          <label for="passwordResetEmail">
+            E-mail da conta
+            <input id="passwordResetEmail" name="email" type="email" inputmode="email"
+              autocomplete="email" placeholder="seuemail@exemplo.com"
+              aria-describedby="passwordResetRequestHelp passwordResetRequestStatus" required />
+          </label>
+
+          <p class="login-form-help" id="passwordResetRequestHelp">
+            Enviaremos um link seguro para você criar uma nova senha.
+          </p>
+
+          <p class="login-status" id="passwordResetRequestStatus" role="status" aria-live="polite"></p>
+
+          <div class="login-actions">
+            <button type="submit" id="passwordResetRequestBtn" class="login-submit-btn">
+              Enviar link
+            </button>
+
+            <button type="button" id="cancelPasswordResetRequestBtn" class="login-secondary-btn">
+              Voltar
+            </button>
+          </div>
+
+        </form>
+
+        <form id="passwordUpdateForm" class="login-form hidden">
+
+          <label for="newPassword">
+            Nova senha
+            <input id="newPassword" name="newPassword" type="password" autocomplete="new-password"
+              minlength="8" placeholder="Pelo menos 8 caracteres"
+              aria-describedby="passwordUpdateHelp passwordUpdateStatus" required />
+          </label>
+
+          <label for="confirmNewPassword">
+            Confirme a nova senha
+            <input id="confirmNewPassword" name="confirmNewPassword" type="password" autocomplete="new-password"
+              minlength="8" placeholder="Digite a mesma senha novamente"
+              aria-describedby="passwordUpdateHelp passwordUpdateStatus" required />
+          </label>
+
+          <p class="login-form-help" id="passwordUpdateHelp">
+            Escolha uma senha que só você conheça. Não use uma senha já utilizada em outros sites.
+          </p>
+
+          <p class="login-status" id="passwordUpdateStatus" role="status" aria-live="polite"></p>
+
+          <div class="login-actions">
+            <button type="submit" id="passwordUpdateBtn" class="login-submit-btn">
+              Salvar nova senha
+            </button>
+
+            <button type="button" id="cancelPasswordUpdateBtn" class="login-secondary-btn">
+              Cancelar
+            </button>
+          </div>
+
+        </form>
+      </div>
+
+      <aside class="pwa-install-guide" id="pwaInstallGuide" aria-labelledby="pwaGuideTitle">
+
+        <div class="pwa-guide-header">
+          <div>
+            <span class="login-kicker">Dica rápida</span>
+            <h2 id="pwaGuideTitle">Coloque o sistema na tela inicial</h2>
+          </div>
+
+          <button type="button" id="closePwaGuideBtn" class="close-pwa-guide-btn"
+            aria-label="Fechar as instruções de instalação" aria-controls="pwaInstallGuide">
+            ×
+          </button>
+        </div>
+
+        <p class="pwa-guide-intro">
+          Assim ele abre como um aplicativo, sem precisar procurar o navegador. Se preferir,
+          feche esta dica e continue usando pelo navegador normalmente.
+        </p>
+
+        <div class="pwa-steps-grid">
+          <section class="pwa-step-card" aria-labelledby="iphoneInstallTitle">
+            <span class="pwa-platform-icon" aria-hidden="true">iPhone</span>
+            <h3 id="iphoneInstallTitle">No iPhone (Safari)</h3>
+            <ol>
+              <li>Abra este sistema no <strong>Safari</strong>.</li>
+              <li>Toque em <strong>Compartilhar</strong> (quadrado com seta para cima).</li>
+              <li>Escolha <strong>Adicionar à Tela de Início</strong>.</li>
+            </ol>
+          </section>
+
+          <section class="pwa-step-card" aria-labelledby="androidInstallTitle">
+            <span class="pwa-platform-icon" aria-hidden="true">Android</span>
+            <h3 id="androidInstallTitle">No Samsung / Android (Chrome)</h3>
+            <ol>
+              <li>Abra este sistema no <strong>Chrome</strong>.</li>
+              <li>Toque no menu de <strong>três pontos</strong> (⋮).</li>
+              <li>Escolha <strong>Adicionar à tela inicial</strong>.</li>
+            </ol>
+          </section>
+        </div>
+
+      </aside>
+
+    </section>
+
+  </div>
 
   <!-- TOPO -->
   <header class="topbar">
@@ -227,6 +393,14 @@
           </label>
 
           <label>
+            Caminhão habitual
+
+            <select name="truckId" id="driverTruckSelect">
+              <option value="">Sem caminhão habitual</option>
+            </select>
+          </label>
+
+          <label>
             Vencimento CNH
             <input type="date" name="vencimentoCnh" />
           </label>
@@ -363,6 +537,27 @@
           </label>
 
           <label>
+            Quem pagou o adiantamento?
+            <select name="origemAdiantamento">
+              <option value="avo">Avô</option>
+              <option value="transportadora">Transportadora — Alexandre</option>
+              <option value="outro">Outro</option>
+            </select>
+          </label>
+
+          <label>
+            Diárias / custos extras
+            <input type="text" name="diariasViagem" id="tripDailyValue"
+              placeholder="R$ 0,00" inputmode="decimal" />
+          </label>
+
+          <label>
+            Ajudantes
+            <input type="text" name="ajudantesViagem" id="tripHelperValue"
+              placeholder="R$ 0,00" inputmode="decimal" />
+          </label>
+
+          <label>
             Status
 
             <select name="statusViagem">
@@ -403,15 +598,39 @@
             </div>
 
             <div class="finance-summary-item">
+              <strong>Diárias / custos extras</strong>
+              <div id="tripFinancialDaily">R$ 0,00</div>
+            </div>
+
+            <div class="finance-summary-item">
+              <strong>Ajudantes</strong>
+              <div id="tripFinancialHelpers">R$ 0,00</div>
+            </div>
+
+            <div class="finance-summary-item">
               <strong>Saldo a pagar</strong>
               <div id="tripFinancialBalance">—</div>
             </div>
 
             <div class="finance-summary-item">
-              <strong>Lucro da viagem</strong>
-              <div id="tripFinancialProfit">—</div>
+              <strong>Margem estimada</strong>
+              <div id="tripFinancialMargin">—</div>
             </div>
 
+          </div>
+
+          <div class="full-width trip-whatsapp-panel" aria-labelledby="tripWhatsAppTitle">
+            <div>
+              <strong id="tripWhatsAppTitle">Enviar instruções ao motorista</strong>
+              <p>Monte uma mensagem com a carga, rota, adiantamento e observações da viagem.</p>
+              <p class="whatsapp-status" id="tripWhatsAppStatus" role="status" aria-live="polite">
+                Selecione uma carga e um motorista para preparar a mensagem.
+              </p>
+            </div>
+
+            <button type="button" id="tripWhatsAppBtn" class="whatsapp-btn">
+              Abrir mensagem no WhatsApp
+            </button>
           </div>
 
           <label class="full-width">
@@ -466,7 +685,18 @@
                 <option>Saldo motorista</option>
                 <option>Diária</option>
                 <option>Ajuda de custo</option>
+                <option>Ajudante</option>
                 <option>Recebimento cliente</option>
+              </select>
+            </label>
+
+            <label>
+              Pago por
+
+              <select name="origemPagamento">
+                <option value="avo">Avô</option>
+                <option value="transportadora">Transportadora — Alexandre</option>
+                <option value="outro">Outro</option>
               </select>
             </label>
 
@@ -536,6 +766,14 @@
           </label>
 
           <label>
+            Registro relacionado
+
+            <select name="relacionadoId" id="documentRelatedSelect">
+              <option value="">Selecione primeiro o tipo</option>
+            </select>
+          </label>
+
+          <label>
             Vencimento
             <input type="date" name="vencimentoDocumentoSistema" />
           </label>
@@ -569,7 +807,7 @@
         <h2>Registros recentes</h2>
 
         <p>
-          Histórico completo do sistema.
+          Histórico completo do sistema. Em cada registro, use Visualizar, Editar ou Apagar.
         </p>
       </div>
 
@@ -593,10 +831,13 @@
 
   </main>
 
-  <!-- MODAL -->
-  <div class="modal-overlay hidden" id="recordModalOverlay">
+  <p id="recordActionStatus" class="sr-only" role="status" aria-live="polite"></p>
 
-    <div class="record-modal">
+  <!-- MODAL -->
+  <div class="modal-overlay hidden" id="recordModalOverlay" role="dialog" aria-modal="true"
+    aria-labelledby="modalTitle">
+
+    <div class="record-modal" tabindex="-1">
 
       <div class="record-modal-header">
 
@@ -606,7 +847,8 @@
 
         <button type="button"
           id="closeModalBtn"
-          class="close-modal-btn">
+          class="close-modal-btn"
+          aria-label="Fechar o registro">
           ✕
         </button>
 
@@ -647,6 +889,40 @@
     </div>
 
   </div>
+
+  <div class="modal-overlay delete-confirm-overlay hidden" id="deleteConfirmOverlay" role="alertdialog"
+    aria-modal="true" aria-labelledby="deleteConfirmTitle" aria-describedby="deleteConfirmMessage">
+
+    <section class="record-modal delete-confirm-modal" tabindex="-1">
+
+      <div class="record-modal-header">
+        <h3 id="deleteConfirmTitle">Apagar registro?</h3>
+      </div>
+
+      <p id="deleteConfirmMessage" class="delete-confirm-message"></p>
+
+      <div class="record-modal-actions delete-confirm-actions">
+        <button type="button" id="cancelDeleteBtn" class="secondary-btn">
+          Manter registro
+        </button>
+
+        <button type="button" id="confirmDeleteBtn" class="danger-btn">
+          🗑️ Sim, apagar
+        </button>
+      </div>
+
+    </section>
+
+  </div>
+
+  <!-- Configurações públicas do Supabase. Nunca coloque uma service_role aqui. -->
+  <script>
+    window.GC_SUPABASE_CONFIG = {
+      url: 'https://jocitcqoonhzscbdoxdh.supabase.co',
+      anonKey: 'sb_publishable_wK7oZR9jeal394NfreSv8w_UHkzZ3w8',
+    };
+  </script>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 
   <!-- SCRIPT -->
   <script src="script.js"></script>

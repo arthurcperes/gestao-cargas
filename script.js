@@ -17,6 +17,34 @@
     documentos: [],
   };
 
+  // A chave do Supabase usada aqui é pública (anon/publishable). Nunca coloque
+  // uma service_role, senha de banco ou segredo neste arquivo.
+  const SUPABASE_CONFIG = Object.freeze({
+    url: safeText(window.GC_SUPABASE_CONFIG?.url),
+    anonKey: safeText(window.GC_SUPABASE_CONFIG?.anonKey),
+  });
+  // Os dados em cache precisam ser separados por conta. As chaves antigas sem
+  // usuário continuam intactas para uma importação única e recuperável.
+  const USER_STORAGE_KEY_PREFIX = 'gc_user_state_v1_';
+  const LEGACY_STORAGE_CLAIM_KEY = 'gc_legacy_state_owner_v1';
+  const LEGACY_LOCAL_ACCESS_KEY = 'gc_local_access_session';
+  const PASSWORD_RECOVERY_MARKER_KEY = 'gc_password_recovery_pending_v1';
+  const PWA_GUIDE_KEY = 'gc_pwa_install_guide_closed';
+  const CLOUD_MIGRATION_KEY_PREFIX = 'gc_supabase_imported_';
+  const CLOUD_BACKUP_KEY_PREFIX = 'gc_backup_before_cloud_';
+  const CLOUD_STATE_TABLE = 'estado_app';
+  const CLOUD_SCHEMA_VERSION = 2;
+
+  let supabaseClient = null;
+  let activeCloudUser = null;
+  let cloudSyncQueue = Promise.resolve();
+  let cloudSyncEnabled = false;
+  let authStateSubscription = null;
+  let passwordRecoveryMode = false;
+  let passwordRecoverySession = null;
+  let passwordRecoveryFinishing = false;
+  let passwordRecoveryValidationTimer = null;
+
   const els = {
     page: document.querySelector('.page'),
     hero: document.querySelector('.hero'),
@@ -36,6 +64,7 @@
 
     recordsSection: document.getElementById('registrosHub'),
     recentRecords: document.getElementById('recentRecords'),
+    recordActionStatus: document.getElementById('recordActionStatus'),
 
     statOpenLoads: document.getElementById('statOpenLoads'),
     statActiveTrips: document.getElementById('statActiveTrips'),
@@ -43,20 +72,55 @@
     statDocsExpiring: document.getElementById('statDocsExpiring'),
 
     btnLogin: document.getElementById('btnLogin'),
+    loginOverlay: document.getElementById('loginOverlay'),
+    loginForm: document.getElementById('loginForm'),
+    loginEmail: document.getElementById('loginEmail'),
+    loginPassword: document.getElementById('loginPassword'),
+    loginStatus: document.getElementById('loginStatus'),
+    loginSubmitBtn: document.getElementById('loginSubmitBtn'),
+    signupBtn: document.getElementById('signupBtn'),
+    forgotPasswordBtn: document.getElementById('forgotPasswordBtn'),
+    passwordResetRequestForm: document.getElementById('passwordResetRequestForm'),
+    passwordResetEmail: document.getElementById('passwordResetEmail'),
+    passwordResetRequestStatus: document.getElementById('passwordResetRequestStatus'),
+    passwordResetRequestBtn: document.getElementById('passwordResetRequestBtn'),
+    cancelPasswordResetRequestBtn: document.getElementById('cancelPasswordResetRequestBtn'),
+    passwordUpdateForm: document.getElementById('passwordUpdateForm'),
+    newPassword: document.getElementById('newPassword'),
+    confirmNewPassword: document.getElementById('confirmNewPassword'),
+    passwordUpdateStatus: document.getElementById('passwordUpdateStatus'),
+    passwordUpdateBtn: document.getElementById('passwordUpdateBtn'),
+    cancelPasswordUpdateBtn: document.getElementById('cancelPasswordUpdateBtn'),
+    closePwaGuideBtn: document.getElementById('closePwaGuideBtn'),
+    pwaInstallGuide: document.getElementById('pwaInstallGuide'),
 
     tripLoadSelect: document.querySelector('select[name="cargaViagem"]'),
     tripDriverSelect: document.querySelector('select[name="motoristaViagem"]'),
     tripTruckSelect: document.querySelector('select[name="caminhaoViagem"]'),
     paymentTripSelect: document.querySelector('select[name="viagemPagamento"]'),
+    driverTruckSelect: document.getElementById('driverTruckSelect'),
+    documentRelatedType: document.querySelector('#documentForm select[name="relacionadoDocumento"]'),
+    documentRelatedSelect: document.getElementById('documentRelatedSelect'),
 
     tripFreightValue: document.getElementById('tripFreightValue'),
     tripCombinedInput: document.querySelector('#tripForm input[name="valorMotorista"]'),
     tripAdvanceInput: document.querySelector('#tripForm input[name="adiantamento"]'),
+    // Estes campos são opcionais enquanto o formulário é atualizado.
+    tripDailyInput:
+      document.getElementById('tripDailyValue') ||
+      document.querySelector('#tripForm input[name="diariasViagem"], #tripForm input[name="diariaPrevista"], #tripForm input[name="diarias"]'),
+    tripHelperInput:
+      document.getElementById('tripHelperValue') ||
+      document.querySelector('#tripForm input[name="ajudantesViagem"], #tripForm input[name="ajudantePrevisto"], #tripForm input[name="ajudantes"]'),
     tripFinancialFreight: document.getElementById('tripFinancialFreight'),
     tripFinancialCombined: document.getElementById('tripFinancialCombined'),
     tripFinancialAdvance: document.getElementById('tripFinancialAdvance'),
     tripFinancialBalance: document.getElementById('tripFinancialBalance'),
-    tripFinancialProfit: document.getElementById('tripFinancialProfit'),
+    tripFinancialDaily: document.getElementById('tripFinancialDaily'),
+    tripFinancialHelpers: document.getElementById('tripFinancialHelpers'),
+    tripFinancialMargin: document.getElementById('tripFinancialMargin'),
+    tripWhatsAppBtn: document.getElementById('tripWhatsAppBtn'),
+    tripWhatsAppStatus: document.getElementById('tripWhatsAppStatus'),
 
     pageTabs: document.querySelectorAll('.page-tabs a'),
 
@@ -68,6 +132,11 @@
     saveEditBtn: document.getElementById('saveEditBtn'),
     cancelEditBtn: document.getElementById('cancelEditBtn'),
     deleteRecordBtn: document.getElementById('deleteRecordBtn'),
+    deleteConfirmOverlay: document.getElementById('deleteConfirmOverlay'),
+    deleteConfirmTitle: document.getElementById('deleteConfirmTitle'),
+    deleteConfirmMessage: document.getElementById('deleteConfirmMessage'),
+    cancelDeleteBtn: document.getElementById('cancelDeleteBtn'),
+    confirmDeleteBtn: document.getElementById('confirmDeleteBtn'),
 
     tripAutoFillLoad: document.getElementById('tripAutoFillLoad'),
     tripAutoFillDriver: document.getElementById('tripAutoFillDriver'),
@@ -89,6 +158,13 @@
     id: null,
     mode: 'view',
     dirty: false,
+    trigger: null,
+  };
+
+  const deleteDialogState = {
+    type: null,
+    id: null,
+    trigger: null,
   };
 
   let currentSearchQuery = '';
@@ -135,6 +211,13 @@
         display: (value) => (String(value).toLowerCase() === 'sim' ? 'Sim' : 'Não'),
       },
       { name: 'vencimentoCnh', label: 'Vencimento CNH', type: 'date' },
+      {
+        name: 'truckId',
+        label: 'Caminhão habitual',
+        type: 'select',
+        options: () => state.caminhoes.map((item) => ({ value: item.id, label: getTruckLabel(item) })),
+        display: (value) => (value ? getTruckLabelById(value) : 'Sem caminhão habitual'),
+      },
       { name: 'observacoes', label: 'Observações', type: 'textarea' },
     ],
     'Caminhão': [
@@ -181,7 +264,19 @@
       },
       { name: 'valorFrete', label: 'Valor do frete', type: 'money' },
       { name: 'valorMotorista', label: 'Valor combinado motorista', type: 'money' },
-      { name: 'adiantamento', label: 'Adiantamento', type: 'money' },
+      { name: 'adiantamento', label: 'Adiantamento inicial', type: 'money' },
+      {
+        name: 'origemAdiantamento',
+        label: 'Quem pagou o adiantamento?',
+        type: 'select',
+        options: [
+          { value: 'avo', label: 'Avô' },
+          { value: 'transportadora', label: 'Transportadora — Alexandre' },
+          { value: 'outro', label: 'Outro' },
+        ],
+      },
+      { name: 'diarias', label: 'Diárias previstas', type: 'money' },
+      { name: 'ajudantes', label: 'Ajudantes / ajuda de custo prevista', type: 'money' },
       {
         name: 'status',
         label: 'Status',
@@ -210,9 +305,16 @@
           'Adiantamento',
           'Saldo motorista',
           'Diária',
+          'Ajudante',
           'Ajuda de custo',
           'Recebimento cliente',
         ],
+      },
+      {
+        name: 'origemPagamento',
+        label: 'Quem pagou / recebeu',
+        type: 'select',
+        options: ['Avô', 'Transportadora — Alexandre', 'Outro'],
       },
       { name: 'valor', label: 'Valor', type: 'money' },
       { name: 'dataPagamento', label: 'Data', type: 'date' },
@@ -230,6 +332,13 @@
         label: 'Relacionado a',
         type: 'select',
         options: ['Motorista', 'Caminhão', 'Viagem', 'Carga'],
+      },
+      {
+        name: 'relacionadoId',
+        label: 'Registro relacionado',
+        type: 'select',
+        options: (record) => getDocumentRelatedOptions(record.relacionado),
+        display: (value, record) => getDocumentRelatedLabel(record.relacionado, value),
       },
       { name: 'vencimentoDocumentoSistema', label: 'Vencimento', type: 'date' },
       { name: 'arquivoDocumento', label: 'Arquivo', type: 'file' },
@@ -256,7 +365,31 @@
     },
   };
 
-  const TRIP_VIEW_SKIP = new Set(['valorFrete', 'valorMotorista', 'adiantamento']);
+  const TRIP_VIEW_SKIP = new Set(['valorFrete', 'valorMotorista', 'adiantamento', 'diarias', 'ajudantes']);
+
+  const FINANCIAL_MODEL_VERSION = 2;
+  const PAYMENT_KIND = Object.freeze({
+    ADVANCE: 'adiantamento',
+    DRIVER_BALANCE: 'saldo_motorista',
+    DAILY: 'diaria',
+    HELPER: 'ajudante',
+    AID: 'ajuda_custo',
+    CLIENT_RECEIPT: 'recebimento_cliente',
+  });
+
+  const PAYMENT_LABELS = Object.freeze({
+    [PAYMENT_KIND.ADVANCE]: 'Adiantamento',
+    [PAYMENT_KIND.DRIVER_BALANCE]: 'Saldo motorista',
+    [PAYMENT_KIND.DAILY]: 'Diária',
+    [PAYMENT_KIND.HELPER]: 'Ajudante',
+    [PAYMENT_KIND.AID]: 'Ajuda de custo',
+    [PAYMENT_KIND.CLIENT_RECEIPT]: 'Recebimento cliente',
+  });
+  const PAYMENT_SOURCE_LABELS = Object.freeze({
+    avo: 'Avô',
+    transportadora: 'Transportadora — Alexandre',
+    outro: 'Outro',
+  });
 
   function uid() {
     return `id_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
@@ -283,15 +416,59 @@
   }
 
   function moneyToNumber(value) {
-    if (typeof value !== 'string') return Number(value) || 0;
-    const cleaned = value
+    if (typeof value !== 'string') return Number.isFinite(Number(value)) ? Number(value) : 0;
+    let cleaned = value
       .replace(/\s/g, '')
       .replace(/R\$/gi, '')
-      .replace(/\./g, '')
-      .replace(',', '.')
-      .replace(/[^0-9.-]/g, '');
+      .replace(/[^0-9,.-]/g, '');
+    // Aceita tanto 1.234,56 (formato brasileiro) quanto 1234.56 (valor vindo da nuvem).
+    if (cleaned.includes(',')) {
+      cleaned = cleaned.replace(/\./g, '').replace(',', '.');
+    } else if ((cleaned.match(/\./g) || []).length > 1) {
+      cleaned = cleaned.replace(/\./g, '');
+    }
     const number = Number(cleaned);
     return Number.isFinite(number) ? number : 0;
+  }
+
+  function hasMoneyValue(value) {
+    return value !== null && value !== undefined && safeText(value) !== '';
+  }
+
+  function nonNegativeMoney(value) {
+    return Math.max(0, moneyToNumber(value));
+  }
+
+  function normalizePaymentType(value) {
+    const type = normalizeText(value).replace(/\s+/g, ' ');
+    if (type === 'adiantamento') return PAYMENT_KIND.ADVANCE;
+    if (type === 'saldo motorista' || type === 'saldo do motorista') return PAYMENT_KIND.DRIVER_BALANCE;
+    if (type === 'diaria') return PAYMENT_KIND.DAILY;
+    if (type === 'ajudante' || type === 'ajudantes') return PAYMENT_KIND.HELPER;
+    if (type === 'ajuda de custo') return PAYMENT_KIND.AID;
+    if (type === 'recebimento cliente' || type === 'recebimento do cliente') return PAYMENT_KIND.CLIENT_RECEIPT;
+    return '';
+  }
+
+  function getPaymentLabel(value) {
+    const kind = normalizePaymentType(value);
+    return PAYMENT_LABELS[kind] || safeText(value);
+  }
+
+  function getPaymentSourceLabel(value) {
+    const normalized = normalizeText(value);
+    if (normalized === 'avo') return PAYMENT_SOURCE_LABELS.avo;
+    if (normalized === 'transportadora' || normalized.includes('alexandre')) return PAYMENT_SOURCE_LABELS.transportadora;
+    if (normalized === 'outro') return PAYMENT_SOURCE_LABELS.outro;
+    return safeText(value);
+  }
+
+  function getFormMoneyValue(formData, names) {
+    for (const name of names) {
+      const value = formData.get(name);
+      if (hasMoneyValue(value)) return moneyToNumber(String(value));
+    }
+    return 0;
   }
 
   function formatMoney(value) {
@@ -299,23 +476,88 @@
   }
 
   function formatDate(dateString) {
-    if (!dateString) return 'Sem data';
-    const date = new Date(dateString);
+    const date = parseLocalDate(dateString);
     if (Number.isNaN(date.getTime())) return 'Sem data';
     return date.toLocaleDateString('pt-BR');
+  }
+
+  function parseLocalDate(value) {
+    const text = safeText(value);
+    if (!text) return new Date(NaN);
+    const match = text.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (match) return new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]));
+    return new Date(text);
   }
 
   function toDateInputValue(value) {
     const text = safeText(value);
     if (!text) return '';
     if (/^\d{4}-\d{2}-\d{2}$/.test(text)) return text;
-    const date = new Date(text);
+    const date = parseLocalDate(text);
     if (Number.isNaN(date.getTime())) return '';
-    return date.toISOString().slice(0, 10);
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const day = String(date.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
   }
 
   function getBaseUrl() {
     return `${window.location.origin}${window.location.pathname}`;
+  }
+
+  function getPasswordRecoveryRedirectUrl() {
+    const url = new URL(getBaseUrl());
+    url.searchParams.set('recovery', '1');
+    return url.toString();
+  }
+
+  function isPasswordRecoveryCallback() {
+    const query = new URLSearchParams(window.location.search);
+    const hash = new URLSearchParams(window.location.hash.replace(/^#/, ''));
+    return query.get('recovery') === '1' || query.get('type') === 'recovery' || hash.get('type') === 'recovery';
+  }
+
+  function clearPasswordRecoveryUrl() {
+    const url = new URL(window.location.href);
+    url.searchParams.delete('recovery');
+    url.searchParams.delete('code');
+    url.searchParams.delete('type');
+    url.hash = '';
+    history.replaceState({}, document.title, `${url.pathname}${url.search}`);
+  }
+
+  function rememberPasswordRecoverySession(session) {
+    const userId = safeText(session?.user?.id);
+    if (!userId) return;
+    try {
+      sessionStorage.setItem(
+        PASSWORD_RECOVERY_MARKER_KEY,
+        JSON.stringify({ userId, createdAt: Date.now() })
+      );
+    } catch {
+      // Navegadores que bloqueiam sessionStorage continuam usando o evento do Supabase.
+    }
+  }
+
+  function getTrustedPasswordRecoverySession(session) {
+    const userId = safeText(session?.user?.id);
+    if (!userId) return null;
+    try {
+      const raw = sessionStorage.getItem(PASSWORD_RECOVERY_MARKER_KEY);
+      const marker = raw ? JSON.parse(raw) : null;
+      const isRecent = Number(marker?.createdAt) > Date.now() - 2 * 60 * 60 * 1000;
+      return marker?.userId === userId && isRecent ? session : null;
+    } catch {
+      return null;
+    }
+  }
+
+  function clearPasswordRecoverySessionMarker() {
+    try {
+      sessionStorage.removeItem(PASSWORD_RECOVERY_MARKER_KEY);
+    } catch {
+      // Não há nada a limpar quando o navegador bloqueia sessionStorage.
+    }
   }
 
   function setUrlWithoutQuery(hash = window.location.hash || '') {
@@ -337,36 +579,646 @@
     return Number.isFinite(time) ? time : 0;
   }
 
-  function saveState(key) {
-    localStorage.setItem(STORAGE_KEYS[key], JSON.stringify(state[key]));
+  function getUserStorageKey(userId, key) {
+    const normalizedUserId = safeText(userId);
+    if (!normalizedUserId || !STORAGE_KEYS[key]) return '';
+    return `${USER_STORAGE_KEY_PREFIX}${normalizedUserId}_${key}`;
+  }
+
+  function readRecordsFromStorage(storageKey) {
+    try {
+      const raw = storageKey ? localStorage.getItem(storageKey) : null;
+      const parsed = raw ? JSON.parse(raw) : [];
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  }
+
+  function replaceState(snapshot = {}) {
+    Object.keys(STORAGE_KEYS).forEach((key) => {
+      state[key] = Array.isArray(snapshot[key]) ? snapshot[key] : [];
+    });
+    normalizeLegacyData();
+  }
+
+  function clearLoadedState() {
+    replaceState();
+  }
+
+  function readLegacyState() {
+    return Object.fromEntries(
+      Object.keys(STORAGE_KEYS).map((key) => [key, readRecordsFromStorage(STORAGE_KEYS[key])])
+    );
+  }
+
+  function hasSavedUserState(userId) {
+    return Object.keys(STORAGE_KEYS).some((key) => localStorage.getItem(getUserStorageKey(userId, key)) !== null);
+  }
+
+  function hasRecords(snapshot) {
+    return Object.keys(STORAGE_KEYS).some((key) => Array.isArray(snapshot?.[key]) && snapshot[key].length > 0);
+  }
+
+  function legacyStateBelongsToUser(user) {
+    try {
+      const raw = localStorage.getItem(LEGACY_LOCAL_ACCESS_KEY);
+      const legacyEmail = safeText(raw ? JSON.parse(raw)?.email : '');
+      return !legacyEmail || normalizeText(legacyEmail) === normalizeText(user?.email);
+    } catch {
+      return true;
+    }
+  }
+
+  function loadStateForUser(user) {
+    const userId = safeText(user?.id);
+    clearLoadedState();
+    if (!userId) return;
+
+    if (hasSavedUserState(userId)) {
+      const savedState = Object.fromEntries(
+        Object.keys(STORAGE_KEYS).map((key) => [key, readRecordsFromStorage(getUserStorageKey(userId, key))])
+      );
+      replaceState(savedState);
+      return;
+    }
+
+    const legacyOwnerId = safeText(localStorage.getItem(LEGACY_STORAGE_CLAIM_KEY));
+    const legacyState = readLegacyState();
+    if (
+      (!legacyOwnerId || legacyOwnerId === userId) &&
+      hasRecords(legacyState) &&
+      legacyStateBelongsToUser(user)
+    ) {
+      replaceState(legacyState);
+      localStorage.setItem(LEGACY_STORAGE_CLAIM_KEY, userId);
+    }
+    persistAllLocalState();
+  }
+
+  function saveState(key, { syncCloud = true } = {}) {
+    const userId = safeText(activeCloudUser?.id);
+    if (!STORAGE_KEYS[key] || !userId) return;
+    localStorage.setItem(getUserStorageKey(userId, key), JSON.stringify(state[key]));
+    if (syncCloud) queueCloudSnapshotSync();
   }
 
   function loadState() {
-    for (const key of Object.keys(STORAGE_KEYS)) {
-      try {
-        const raw = localStorage.getItem(STORAGE_KEYS[key]);
-        state[key] = raw ? JSON.parse(raw) : [];
-      } catch {
-        state[key] = [];
-      }
-    }
+    clearLoadedState();
+  }
+
+  function persistAllLocalState() {
+    if (!activeCloudUser?.id) return;
+    Object.keys(STORAGE_KEYS).forEach((key) => saveState(key, { syncCloud: false }));
+  }
+
+  function createAppSnapshot() {
+    return {
+      version: CLOUD_SCHEMA_VERSION,
+      exportedAt: new Date().toISOString(),
+      cargas: state.cargas,
+      motoristas: state.motoristas,
+      caminhoes: state.caminhoes,
+      viagens: state.viagens,
+      pagamentos: state.pagamentos,
+      documentos: state.documentos,
+    };
+  }
+
+  function mergeRecordsByLatest(localRecords, remoteRecords) {
+    const records = new Map();
+    (Array.isArray(localRecords) ? localRecords : []).forEach((item) => {
+      if (item?.id) records.set(item.id, item);
+    });
+    (Array.isArray(remoteRecords) ? remoteRecords : []).forEach((item) => {
+      if (!item?.id) return;
+      const local = records.get(item.id);
+      if (!local || getTimestamp(item) >= getTimestamp(local)) records.set(item.id, item);
+    });
+    return [...records.values()].sort((a, b) => getTimestamp(b) - getTimestamp(a));
+  }
+
+  function mergeCloudSnapshot(snapshot) {
+    if (!snapshot || typeof snapshot !== 'object') return;
+    Object.keys(STORAGE_KEYS).forEach((key) => {
+      if (Array.isArray(snapshot[key])) state[key] = mergeRecordsByLatest(state[key], snapshot[key]);
+    });
     normalizeLegacyData();
+    persistAllLocalState();
+  }
+
+  function getSupabaseClient() {
+    if (supabaseClient) return supabaseClient;
+    if (!SUPABASE_CONFIG.url || !SUPABASE_CONFIG.anonKey || !window.supabase?.createClient) return null;
+    try {
+      supabaseClient = window.supabase.createClient(SUPABASE_CONFIG.url, SUPABASE_CONFIG.anonKey, {
+        auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true },
+      });
+      return supabaseClient;
+    } catch (error) {
+      console.warn('Não foi possível iniciar a conexão com a nuvem.', error);
+      return null;
+    }
+  }
+
+  function setLoginStatus(message = '', isError = false) {
+    if (!els.loginStatus) return;
+    els.loginStatus.textContent = message;
+    els.loginStatus.classList.toggle('error', Boolean(isError));
+  }
+
+  function setLoginActionsBusy(isBusy) {
+    if (els.loginSubmitBtn) els.loginSubmitBtn.disabled = isBusy;
+    if (els.signupBtn) els.signupBtn.disabled = isBusy;
+    if (els.forgotPasswordBtn) els.forgotPasswordBtn.disabled = isBusy;
+  }
+
+  function setFormStatus(element, message = '', isError = false) {
+    if (!element) return;
+    element.textContent = message;
+    element.classList.toggle('error', Boolean(isError));
+  }
+
+  function setPasswordResetRequestStatus(message = '', isError = false) {
+    setFormStatus(els.passwordResetRequestStatus, message, isError);
+  }
+
+  function setPasswordUpdateStatus(message = '', isError = false) {
+    setFormStatus(els.passwordUpdateStatus, message, isError);
+  }
+
+  function setPasswordResetRequestBusy(isBusy) {
+    if (els.passwordResetRequestBtn) els.passwordResetRequestBtn.disabled = isBusy;
+    if (els.cancelPasswordResetRequestBtn) els.cancelPasswordResetRequestBtn.disabled = isBusy;
+  }
+
+  function setPasswordUpdateBusy(isBusy) {
+    if (els.passwordUpdateBtn) els.passwordUpdateBtn.disabled = isBusy;
+    if (els.cancelPasswordUpdateBtn) els.cancelPasswordUpdateBtn.disabled = isBusy;
+  }
+
+  function setAuthView(view, { focus = true } = {}) {
+    const content = {
+      login: {
+        title: 'Entre para abrir a caderneta',
+        description: 'Use seu e-mail e senha para acessar somente os seus registros. Se ainda não tiver acesso, crie sua conta e confirme o e-mail para vincular os dados à nuvem.',
+        target: els.loginEmail,
+      },
+      request: {
+        title: 'Vamos recuperar sua senha',
+        description: 'Digite o e-mail usado no sistema. Se houver uma conta, enviaremos um link seguro para criar uma nova senha.',
+        target: els.passwordResetEmail,
+      },
+      update: {
+        title: 'Escolha uma nova senha',
+        description: 'O link foi confirmado. Defina uma senha nova para voltar a acessar seus registros.',
+        target: els.newPassword,
+      },
+    };
+    const activeView = content[view] || content.login;
+    if (els.loginForm) els.loginForm.hidden = view !== 'login';
+    if (els.passwordResetRequestForm) els.passwordResetRequestForm.hidden = view !== 'request';
+    if (els.passwordUpdateForm) els.passwordUpdateForm.hidden = view !== 'update';
+    const title = document.getElementById('loginTitle');
+    const description = document.getElementById('loginDescription');
+    if (title) title.textContent = activeView.title;
+    if (description) description.textContent = activeView.description;
+    if (focus && activeView.target) window.setTimeout(() => activeView.target.focus(), 0);
+  }
+
+  function openPasswordResetRequest() {
+    clearPasswordRecoveryValidationTimer();
+    clearPasswordRecoverySessionMarker();
+    passwordRecoveryMode = false;
+    passwordRecoverySession = null;
+    if (els.passwordResetRequestForm) els.passwordResetRequestForm.reset();
+    if (els.passwordResetEmail) els.passwordResetEmail.value = safeText(els.loginEmail?.value);
+    setPasswordResetRequestStatus('');
+    setAuthView('request');
+  }
+
+  function returnToLoginFromPasswordReset() {
+    clearPasswordRecoveryValidationTimer();
+    clearPasswordRecoverySessionMarker();
+    passwordRecoveryMode = false;
+    passwordRecoverySession = null;
+    clearPasswordRecoveryUrl();
+    if (els.passwordResetEmail?.value && els.loginEmail) els.loginEmail.value = els.passwordResetEmail.value;
+    if (els.passwordUpdateForm) els.passwordUpdateForm.reset();
+    setPasswordResetRequestStatus('');
+    setPasswordUpdateStatus('');
+    setAuthView('login');
+  }
+
+  function setApplicationAccess(isGranted) {
+    document.body.classList.toggle('login-open', !isGranted);
+    if (els.loginOverlay) els.loginOverlay.classList.toggle('hidden', isGranted);
+    if (els.modalOverlay && !isGranted) els.modalOverlay.classList.add('hidden');
+    if (els.deleteConfirmOverlay && !isGranted) els.deleteConfirmOverlay.classList.add('hidden');
+    document.querySelectorAll('body > .topbar, body > .page-tabs, body > .page, body > #recordModalOverlay').forEach((element) => {
+      if (isGranted) element.removeAttribute('aria-hidden');
+      else element.setAttribute('aria-hidden', 'true');
+    });
+    if (els.btnLogin) els.btnLogin.textContent = isGranted ? 'Sair' : 'Entrar';
+  }
+
+  function announceRecordAction(message) {
+    if (!els.recordActionStatus) return;
+    els.recordActionStatus.textContent = '';
+    window.setTimeout(() => {
+      if (els.recordActionStatus) els.recordActionStatus.textContent = message;
+    }, 0);
+  }
+
+  async function writeCloudSnapshot() {
+    const client = getSupabaseClient();
+    if (!client || !activeCloudUser || !cloudSyncEnabled) return;
+    const { error } = await client.from(CLOUD_STATE_TABLE).upsert(
+      {
+        user_id: activeCloudUser.id,
+        payload: createAppSnapshot(),
+        schema_version: CLOUD_SCHEMA_VERSION,
+        updated_at: new Date().toISOString(),
+      },
+      { onConflict: 'user_id' }
+    );
+    if (error) throw error;
+  }
+
+  function queueCloudSnapshotSync() {
+    if (!activeCloudUser || !cloudSyncEnabled || !getSupabaseClient()) return;
+    cloudSyncQueue = cloudSyncQueue
+      .catch(() => undefined)
+      .then(() => writeCloudSnapshot())
+      .catch((error) => console.warn('A cópia na nuvem será tentada novamente na próxima alteração.', error));
+  }
+
+  async function importAndSyncCloudState(user) {
+    const client = getSupabaseClient();
+    if (!client || !user) return;
+    const backupKey = `${CLOUD_BACKUP_KEY_PREFIX}${user.id}`;
+    if (!localStorage.getItem(backupKey)) localStorage.setItem(backupKey, JSON.stringify(createAppSnapshot()));
+
+    const remote = await client.from(CLOUD_STATE_TABLE).select('payload, updated_at').eq('user_id', user.id).maybeSingle();
+    if (remote.error && remote.error.code !== 'PGRST116') throw remote.error;
+    if (remote.data?.payload) mergeCloudSnapshot(remote.data.payload);
+
+    const migrationKey = `${CLOUD_MIGRATION_KEY_PREFIX}${user.id}`;
+    if (!localStorage.getItem(migrationKey)) {
+      const migration = await client.rpc('importar_snapshot_localstorage', { p_payload: createAppSnapshot() });
+      if (migration.error) throw migration.error;
+      localStorage.setItem(migrationKey, JSON.stringify({ completedAt: new Date().toISOString(), summary: migration.data || null }));
+    }
+
+    cloudSyncEnabled = true;
+    await writeCloudSnapshot();
+  }
+
+  function resetSessionView() {
+    currentSearchQuery = '';
+    activeQuickFilter = null;
+    if (els.searchInput) els.searchInput.value = '';
+    [
+      els.loadForm,
+      els.driverForm,
+      els.truckForm,
+      els.tripForm,
+      els.paymentForm,
+      els.documentForm,
+      els.passwordResetRequestForm,
+      els.passwordUpdateForm,
+    ].forEach((form) => form?.reset());
+    modalState.type = null;
+    modalState.id = null;
+    modalState.mode = 'view';
+    modalState.dirty = false;
+    modalState.trigger = null;
+    ui.editForm = null;
+  }
+
+  function lockApplication(message, isError = false) {
+    clearPasswordRecoveryValidationTimer();
+    clearPasswordRecoverySessionMarker();
+    activeCloudUser = null;
+    cloudSyncEnabled = false;
+    passwordRecoveryMode = false;
+    passwordRecoverySession = null;
+    clearLoadedState();
+    resetSessionView();
+    renderCurrentView();
+    setApplicationAccess(false);
+    if (els.loginPassword) els.loginPassword.value = '';
+    setAuthView('login', { focus: false });
+    setLoginStatus(message, isError);
+  }
+
+  function clearPasswordRecoveryValidationTimer() {
+    if (passwordRecoveryValidationTimer !== null) window.clearTimeout(passwordRecoveryValidationTimer);
+    passwordRecoveryValidationTimer = null;
+  }
+
+  function beginPasswordRecoveryValidation() {
+    if (passwordRecoverySession?.user) {
+      blockApplicationForPasswordRecovery(passwordRecoverySession);
+      return;
+    }
+    clearPasswordRecoveryValidationTimer();
+    passwordRecoveryMode = true;
+    activeCloudUser = null;
+    cloudSyncEnabled = false;
+    clearLoadedState();
+    resetSessionView();
+    renderCurrentView();
+    setApplicationAccess(false);
+    setAuthView('update', { focus: false });
+    setPasswordUpdateStatus('Verificando o link seguro para trocar sua senha…');
+    passwordRecoveryValidationTimer = window.setTimeout(() => {
+      if (passwordRecoveryMode && !passwordRecoverySession?.user) showPasswordRecoveryUnavailable();
+    }, 4000);
+  }
+
+  function blockApplicationForPasswordRecovery(session) {
+    if (!session?.user) {
+      showPasswordRecoveryUnavailable();
+      return;
+    }
+    clearPasswordRecoveryValidationTimer();
+    rememberPasswordRecoverySession(session);
+    passwordRecoveryMode = true;
+    passwordRecoverySession = session;
+    activeCloudUser = null;
+    cloudSyncEnabled = false;
+    clearLoadedState();
+    resetSessionView();
+    renderCurrentView();
+    setApplicationAccess(false);
+    setAuthView('update');
+    setPasswordUpdateStatus('Link confirmado. Agora escolha uma senha nova para entrar com segurança.');
+  }
+
+  function showPasswordRecoveryUnavailable(message = 'Este link não é mais válido ou já expirou. Peça um novo link para recuperar sua senha.') {
+    clearPasswordRecoveryValidationTimer();
+    clearPasswordRecoverySessionMarker();
+    passwordRecoveryMode = true;
+    passwordRecoverySession = null;
+    activeCloudUser = null;
+    cloudSyncEnabled = false;
+    clearLoadedState();
+    resetSessionView();
+    renderCurrentView();
+    setApplicationAccess(false);
+    setAuthView('request');
+    setPasswordResetRequestStatus(message, true);
+  }
+
+  function setupSupabaseAuthListener() {
+    const client = getSupabaseClient();
+    if (!client || authStateSubscription) return;
+    const { data } = client.auth.onAuthStateChange((event, session) => {
+      if (event === 'PASSWORD_RECOVERY') {
+        passwordRecoveryMode = true;
+        passwordRecoverySession = session || null;
+        rememberPasswordRecoverySession(session);
+        window.setTimeout(() => blockApplicationForPasswordRecovery(session), 0);
+        return;
+      }
+      if (event !== 'SIGNED_OUT' && event !== 'USER_DELETED') return;
+      if (passwordRecoveryFinishing) return;
+      window.setTimeout(() => {
+        if (!session) lockApplication('Sessão encerrada. Entre novamente para acessar os dados.');
+      }, 0);
+    });
+    authStateSubscription = data?.subscription || null;
+  }
+
+  async function unlockForUser(user) {
+    if (!safeText(user?.id)) throw new Error('Não foi possível identificar a conta autenticada.');
+    passwordRecoveryFinishing = false;
+    activeCloudUser = user;
+    cloudSyncEnabled = false;
+    loadStateForUser(user);
+    renderCurrentView();
+    setApplicationAccess(true);
+    setLoginStatus('Conectando e conferindo a cópia segura na nuvem…');
+    try {
+      await importAndSyncCloudState(user);
+      renderCurrentView();
+      setLoginStatus('');
+    } catch (error) {
+      console.warn('A conta entrou, mas a sincronização inicial falhou.', error);
+      setLoginStatus('Você entrou, mas a nuvem não respondeu agora. Os dados locais continuam preservados.', true);
+    }
+  }
+
+  async function restoreAccess() {
+    const client = getSupabaseClient();
+    if (!client) {
+      setLoginStatus('Não foi possível iniciar o acesso protegido. Verifique sua conexão e recarregue a página.', true);
+      return;
+    }
+
+    const { data, error } = await client.auth.getSession();
+    if (passwordRecoveryMode) {
+      const trustedRecoverySession = getTrustedPasswordRecoverySession(data?.session);
+      if (trustedRecoverySession) {
+        passwordRecoverySession = trustedRecoverySession;
+        blockApplicationForPasswordRecovery(trustedRecoverySession);
+      } else if (error) {
+        showPasswordRecoveryUnavailable('Não foi possível validar este link agora. Peça um novo link e tente novamente.');
+      } else {
+        beginPasswordRecoveryValidation();
+      }
+      return;
+    }
+    if (error) {
+      console.warn('Não foi possível restaurar a sessão da nuvem.', error);
+      setLoginStatus('Não foi possível verificar sua sessão agora. Tente entrar novamente.', true);
+      return;
+    }
+    if (data?.session?.user) {
+      await unlockForUser(data.session.user);
+      return;
+    }
+    setLoginStatus('Entre com o e-mail e a senha cadastrados no sistema em nuvem.');
+  }
+
+  async function handleLoginSubmit(event) {
+    event.preventDefault();
+    const email = safeText(els.loginEmail?.value);
+    const password = safeText(els.loginPassword?.value);
+    if (!email || !password) return setLoginStatus('Informe e-mail e senha para continuar.', true);
+    setLoginActionsBusy(true);
+    try {
+      const client = getSupabaseClient();
+      if (!client) throw new Error('O serviço de autenticação não está disponível. Verifique sua conexão e tente novamente.');
+      const { data, error } = await client.auth.signInWithPassword({ email, password });
+      if (error) throw error;
+      await unlockForUser(data?.user);
+    } catch (error) {
+      setLoginStatus(error?.message || 'Não foi possível entrar. Confira os dados e tente novamente.', true);
+    } finally {
+      setLoginActionsBusy(false);
+    }
+  }
+
+  async function handleSignup() {
+    if (els.loginForm && !els.loginForm.reportValidity()) return;
+    const email = safeText(els.loginEmail?.value);
+    const password = safeText(els.loginPassword?.value);
+    if (!email || !password) return setLoginStatus('Informe e-mail e senha para criar a conta.', true);
+    setLoginActionsBusy(true);
+    try {
+      const client = getSupabaseClient();
+      if (!client) throw new Error('O serviço de autenticação não está disponível. Verifique sua conexão e tente novamente.');
+      const { data, error } = await client.auth.signUp({ email, password });
+      if (error) throw error;
+      if (data?.session?.user) {
+        await unlockForUser(data.session.user);
+        return;
+      }
+      if (!data?.user) throw new Error('Não foi possível criar a conta. Tente novamente.');
+      if (els.loginPassword) els.loginPassword.value = '';
+      setLoginStatus('Conta criada. Confira seu e-mail para confirmar o acesso e depois entre no sistema.');
+    } catch (error) {
+      setLoginStatus(error?.message || 'Não foi possível criar a conta. Tente novamente.', true);
+    } finally {
+      setLoginActionsBusy(false);
+    }
+  }
+
+  function getPasswordResetRequestErrorMessage(error) {
+    const detail = normalizeText(error?.message);
+    if (detail.includes('redirect')) {
+      return 'Não foi possível preparar o link. Peça ajuda a quem administra o sistema para conferir o endereço do site.';
+    }
+    return 'Não foi possível enviar o link agora. Verifique sua conexão e tente novamente.';
+  }
+
+  function getPasswordUpdateErrorMessage(error) {
+    const detail = normalizeText(error?.message);
+    if (detail.includes('password') || detail.includes('weak')) {
+      return 'Escolha uma senha mais forte, com pelo menos 8 caracteres.';
+    }
+    if (detail.includes('session') || detail.includes('token') || detail.includes('jwt') || detail.includes('expired')) {
+      return 'Este link não é mais válido. Peça um novo link para recuperar sua senha.';
+    }
+    return 'Não foi possível salvar a nova senha. Peça um novo link e tente novamente.';
+  }
+
+  async function handlePasswordResetRequest(event) {
+    event.preventDefault();
+    if (els.passwordResetRequestForm && !els.passwordResetRequestForm.reportValidity()) return;
+    const email = safeText(els.passwordResetEmail?.value);
+    if (!email) return setPasswordResetRequestStatus('Informe seu e-mail para receber o link.', true);
+    setPasswordResetRequestBusy(true);
+    clearPasswordRecoveryValidationTimer();
+    passwordRecoveryMode = false;
+    passwordRecoverySession = null;
+    try {
+      const client = getSupabaseClient();
+      if (!client) throw new Error('auth_unavailable');
+      const { error } = await client.auth.resetPasswordForEmail(email, {
+        redirectTo: getPasswordRecoveryRedirectUrl(),
+      });
+      if (error) throw error;
+      setPasswordResetRequestStatus('Se existir uma conta com esse e-mail, você receberá um link para criar uma nova senha. Confira também a pasta de spam.');
+    } catch (error) {
+      setPasswordResetRequestStatus(getPasswordResetRequestErrorMessage(error), true);
+    } finally {
+      setPasswordResetRequestBusy(false);
+    }
+  }
+
+  async function finishPasswordRecovery(message) {
+    passwordRecoveryFinishing = true;
+    try {
+      const client = getSupabaseClient();
+      if (client) {
+        const { error } = await client.auth.signOut({ scope: 'local' });
+        if (error) console.warn('Não foi possível encerrar a sessão temporária de recuperação.', error);
+      }
+    } catch (error) {
+      console.warn('Não foi possível encerrar a sessão temporária de recuperação.', error);
+    } finally {
+      clearPasswordRecoveryUrl();
+      lockApplication(message);
+    }
+  }
+
+  async function handlePasswordUpdate(event) {
+    event.preventDefault();
+    if (els.passwordUpdateForm && !els.passwordUpdateForm.reportValidity()) return;
+    if (!passwordRecoveryMode || !passwordRecoverySession?.user) {
+      return setPasswordUpdateStatus('Este link não é mais válido. Peça um novo link para recuperar sua senha.', true);
+    }
+    const password = String(els.newPassword?.value ?? '');
+    const confirmation = String(els.confirmNewPassword?.value ?? '');
+    if (password.length < 8) {
+      return setPasswordUpdateStatus('Escolha uma senha com pelo menos 8 caracteres.', true);
+    }
+    if (password !== confirmation) {
+      return setPasswordUpdateStatus('As duas senhas não são iguais. Digite novamente com calma.', true);
+    }
+    setPasswordUpdateBusy(true);
+    try {
+      const client = getSupabaseClient();
+      if (!client) throw new Error('auth_unavailable');
+      const { error } = await client.auth.updateUser({ password });
+      if (error) throw error;
+      if (els.passwordUpdateForm) els.passwordUpdateForm.reset();
+      await finishPasswordRecovery('Senha alterada com sucesso. Agora entre com a nova senha.');
+    } catch (error) {
+      setPasswordUpdateStatus(getPasswordUpdateErrorMessage(error), true);
+    } finally {
+      setPasswordUpdateBusy(false);
+    }
+  }
+
+  async function cancelPasswordUpdate() {
+    await finishPasswordRecovery('A redefinição foi cancelada. Quando quiser, peça um novo link para recuperar a senha.');
+  }
+
+  async function handleLogout() {
+    const client = getSupabaseClient();
+    try {
+      if (client) {
+        const { error } = await client.auth.signOut({ scope: 'local' });
+        if (error) console.warn('Não foi possível encerrar a sessão remota.', error);
+      }
+    } catch (error) {
+      console.warn('Não foi possível encerrar a sessão remota.', error);
+    } finally {
+      lockApplication('Sessão encerrada. Entre novamente para acessar os dados.');
+    }
+  }
+
+  function registerPwaServiceWorker() {
+    const isSecureContext = window.location.protocol === 'https:' || window.location.hostname === 'localhost';
+    if (!isSecureContext || !('serviceWorker' in navigator)) return;
+    navigator.serviceWorker.register('sw.js').catch((error) => console.warn('Não foi possível ativar o modo aplicativo.', error));
   }
 
   function normalizeLegacyData() {
     state.pagamentos = state.pagamentos.map((item) => ({
       ...item,
       observacao: item.observacao ?? item.observacoes ?? '',
-      tipo: item.tipo ?? item.tipoPagamento ?? '',
-      valor: moneyToNumber(item.valor ?? 0),
+      tipo: getPaymentLabel(item.tipo ?? item.tipoPagamento ?? ''),
+      origemPagamento: getPaymentSourceLabel(item.origemPagamento ?? item.origem ?? item.pagoPor ?? ''),
+      valor: nonNegativeMoney(item.valor ?? 0),
+      isInitialAdvance: Boolean(item.isInitialAdvance),
     }));
 
     state.documentos = state.documentos.map((item) => ({
       ...item,
       tipo: item.tipo ?? item.tipoDocumento ?? '',
       relacionado: item.relacionado ?? item.relacionadoDocumento ?? '',
+      relacionadoId: item.relacionadoId ?? item.registroId ?? '',
       observacoes: item.observacoes ?? '',
       fileName: item.fileName ?? '',
+      storagePath: item.storagePath ?? '',
+      contentType: item.contentType ?? '',
+      fileSize: Number(item.fileSize || 0),
+      arquivoPendenteNuvem: Boolean(item.arquivoPendenteNuvem),
     }));
 
     state.cargas = state.cargas.map((item) => ({
@@ -391,9 +1243,13 @@
     state.viagens = state.viagens.map((item) =>
       recalculateTripRecord({
         ...item,
-        valorFrete: moneyToNumber(item.valorFrete ?? 0),
-        valorMotorista: moneyToNumber(item.valorMotorista ?? 0),
-        adiantamento: moneyToNumber(item.adiantamento ?? 0),
+        // null representa um valor ainda não definido; zero é um valor válido.
+        valorFrete: hasMoneyValue(item.valorFrete) ? moneyToNumber(item.valorFrete) : null,
+        valorMotorista: nonNegativeMoney(item.valorMotorista ?? 0),
+        adiantamento: nonNegativeMoney(item.adiantamento ?? 0),
+        diarias: nonNegativeMoney(item.diarias ?? item.diariaPrevista ?? item.diariasViagem ?? item.diaria ?? 0),
+        ajudantes: nonNegativeMoney(item.ajudantes ?? item.ajudantePrevisto ?? item.ajudantesViagem ?? item.ajudante ?? 0),
+        financialModelVersion: Number(item.financialModelVersion || 1),
         observacoes: item.observacoes ?? item.observacao ?? '',
         status: item.status ?? 'Planejada',
       })
@@ -420,9 +1276,75 @@
     return true;
   }
 
+  function getRecordReferenceDetails(type, id) {
+    const tripFieldByType = {
+      Carga: 'cargaId',
+      Motorista: 'motoristaId',
+      'Caminhão': 'caminhaoId',
+    };
+    const documentTypeByRecordType = {
+      Carga: 'Carga',
+      Motorista: 'Motorista',
+      'Caminhão': 'Caminhão',
+      Viagem: 'Viagem',
+    };
+    const references = [];
+    const linkedTrips = tripFieldByType[type]
+      ? state.viagens.filter((trip) => trip[tripFieldByType[type]] === id).length
+      : 0;
+    if (linkedTrips) references.push({ count: linkedTrips, label: 'viagem' });
+    const linkedPayments = type === 'Viagem'
+      ? state.pagamentos.filter((payment) => payment.viagemId === id).length
+      : 0;
+    if (linkedPayments) references.push({ count: linkedPayments, label: 'pagamento' });
+    const expectedDocumentType = documentTypeByRecordType[type];
+    const linkedDocuments = expectedDocumentType
+      ? state.documentos.filter((documento) => (
+        documento.relacionadoId === id &&
+        normalizeText(documento.relacionado) === normalizeText(expectedDocumentType)
+      )).length
+      : 0;
+    if (linkedDocuments) references.push({ count: linkedDocuments, label: 'documento' });
+    const linkedHabitualDrivers = type === 'Caminhão'
+      ? state.motoristas.filter((motorista) => motorista.truckId === id).length
+      : 0;
+    if (linkedHabitualDrivers) references.push({ count: linkedHabitualDrivers, label: 'motorista' });
+    return references;
+  }
+
+  function getRecordReferenceCount(type, id) {
+    return getRecordReferenceDetails(type, id).reduce((total, reference) => total + reference.count, 0);
+  }
+
+  function formatRecordReferences(references) {
+    return references
+      .map((reference) => `${reference.count} ${reference.label}${reference.count === 1 ? '' : 's'}`)
+      .join(', ');
+  }
+
+  function getRecordDeleteLabel(type, record) {
+    const summary = getRecordSummary({ type, item: record });
+    return summary.title || type;
+  }
+
+  function getDeleteBlockMessage(type, record) {
+    if (type === 'Pagamento' && record.isInitialAdvance) {
+      return 'Este adiantamento foi criado junto com a viagem. Para corrigi-lo, abra a viagem e altere o campo “Adiantamento”.';
+    }
+    const references = getRecordReferenceDetails(type, record.id);
+    if (!references.length) return '';
+    return `Não é possível apagar “${getRecordDeleteLabel(type, record)}” porque ele está ligado a: ${formatRecordReferences(references)}. Primeiro, corrija ou apague esses itens vinculados.`;
+  }
+
   function deleteRecord(type, id) {
     const collection = getCollectionForType(type);
-    if (!collection) return false;
+    const record = getRecord(type, id);
+    if (!collection || !record) return false;
+    const blockMessage = getDeleteBlockMessage(type, record);
+    if (blockMessage) {
+      alert(blockMessage);
+      return false;
+    }
     const before = state[collection].length;
     state[collection] = state[collection].filter((item) => item.id !== id);
     if (state[collection].length !== before) {
@@ -469,16 +1391,34 @@
     return item ? getTripLabel(item) : 'Viagem removida';
   }
 
+  function getDocumentRelatedOptions(relatedType) {
+    const type = normalizeText(relatedType);
+    if (type.includes('motorista')) return state.motoristas.map((item) => ({ value: item.id, label: item.nome || 'Motorista sem nome' }));
+    if (type.includes('caminhao')) return state.caminhoes.map((item) => ({ value: item.id, label: getTruckLabel(item) }));
+    if (type.includes('viagem')) return state.viagens.map((item) => ({ value: item.id, label: getTripLabel(item) }));
+    if (type.includes('carga')) return state.cargas.map((item) => ({ value: item.id, label: getCargaLabel(item) }));
+    return [];
+  }
+
+  function getDocumentRelatedLabel(relatedType, id) {
+    if (!id) return 'Não informado';
+    const option = getDocumentRelatedOptions(relatedType).find((item) => item.value === id);
+    return option?.label || 'Registro não encontrado';
+  }
+
   function getDocumentDueDate(item) {
     return item.vencimentoDocumentoSistema || item.vencimentoDocumento || item.vencimento || item.dataVencimento || '';
   }
 
   function isWithinNextDays(dateString, days = 30) {
     if (!dateString) return false;
-    const date = new Date(dateString);
+    const date = parseLocalDate(dateString);
     if (Number.isNaN(date.getTime())) return false;
     const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    date.setHours(0, 0, 0, 0);
     const limit = new Date();
+    limit.setHours(0, 0, 0, 0);
     limit.setDate(today.getDate() + days);
     return date >= today && date <= limit;
   }
@@ -497,14 +1437,77 @@
     return count;
   }
 
+  function getTripPayments(tripId) {
+    return state.pagamentos.filter((payment) => payment.viagemId === tripId);
+  }
+
+  function sumPayments(payments, kinds) {
+    const acceptedKinds = new Set(Array.isArray(kinds) ? kinds : [kinds]);
+    return payments.reduce((total, payment) => {
+      return acceptedKinds.has(normalizePaymentType(payment.tipo))
+        ? total + nonNegativeMoney(payment.valor)
+        : total;
+    }, 0);
+  }
+
+  function usesPaymentLedgerForInitialAdvance(trip) {
+    return Number(trip?.financialModelVersion || 1) >= FINANCIAL_MODEL_VERSION;
+  }
+
+  // A viagem antiga pode ter um adiantamento salvo nela. Nas viagens novas o
+  // valor inicial vira um lançamento da caderneta, para nunca ser somado duas vezes.
   function getTripFinancialState(trip) {
     const carga = state.cargas.find((item) => item.id === trip.cargaId) || null;
-    const freight = moneyToNumber(trip.valorFrete || carga?.valorFrete || 0);
-    const combined = moneyToNumber(trip.valorMotorista || 0);
-    const advance = moneyToNumber(trip.adiantamento || 0);
-    const balance = combined - advance;
-    const profit = freight - combined;
-    return { carga, freight, combined, advance, balance, profit };
+    const freight = hasMoneyValue(trip.valorFrete)
+      ? nonNegativeMoney(trip.valorFrete)
+      : nonNegativeMoney(carga?.valorFrete ?? 0);
+    const combined = nonNegativeMoney(trip.valorMotorista ?? 0);
+    const payments = getTripPayments(trip.id);
+    const legacyAdvance = usesPaymentLedgerForInitialAdvance(trip)
+      ? 0
+      : nonNegativeMoney(trip.adiantamento ?? 0);
+    const advancePayments = sumPayments(payments, PAYMENT_KIND.ADVANCE);
+    const driverBalancePayments = sumPayments(payments, PAYMENT_KIND.DRIVER_BALANCE);
+    const dailyPayments = sumPayments(payments, PAYMENT_KIND.DAILY);
+    const helperPayments = sumPayments(payments, [PAYMENT_KIND.HELPER, PAYMENT_KIND.AID]);
+    const clientReceipts = sumPayments(payments, PAYMENT_KIND.CLIENT_RECEIPT);
+    const dailyBudget = nonNegativeMoney(trip.diarias ?? trip.diariaPrevista ?? trip.diariasViagem ?? 0);
+    const helperBudget = nonNegativeMoney(trip.ajudantes ?? trip.ajudantePrevisto ?? trip.ajudantesViagem ?? 0);
+
+    // Quando houve lançamento real de diária/ajudante, ele substitui a previsão
+    // da viagem. Assim a previsão e o pagamento não entram duas vezes na margem.
+    const dailyCost = dailyPayments > 0 ? dailyPayments : dailyBudget;
+    const helperCost = helperPayments > 0 ? helperPayments : helperBudget;
+    const advance = legacyAdvance + advancePayments;
+    const driverPaid = advance + driverBalancePayments;
+    const balance = Math.max(0, combined - driverPaid);
+    const driverOverpayment = Math.max(0, driverPaid - combined);
+    const clientBalance = Math.max(0, freight - clientReceipts);
+    const additionalCosts = dailyCost + helperCost;
+    const margin = freight - combined - additionalCosts;
+
+    return {
+      carga,
+      freight,
+      combined,
+      payments,
+      advance,
+      advancePayments,
+      driverBalancePayments,
+      driverPaid,
+      balance,
+      driverOverpayment,
+      dailyBudget,
+      helperBudget,
+      dailyCost,
+      helperCost,
+      additionalCosts,
+      clientReceipts,
+      clientBalance,
+      margin,
+      // Alias preservado para os cartões/integrações que já usam "profit".
+      profit: margin,
+    };
   }
 
   function recalculateTripRecord(trip) {
@@ -513,12 +1516,71 @@
       ...trip,
       valorFrete: finance.freight,
       valorMotorista: finance.combined,
-      adiantamento: finance.advance,
+      adiantamento: nonNegativeMoney(trip.adiantamento ?? 0),
+      diarias: finance.dailyBudget,
+      ajudantes: finance.helperBudget,
       saldoMotorista: finance.balance,
-      lucro: finance.profit,
+      adiantamentoPago: finance.advance,
+      saldoMotoristaPago: finance.driverBalancePayments,
+      saldoCliente: finance.clientBalance,
+      freteRecebido: finance.clientReceipts,
+      custosAdicionais: finance.additionalCosts,
+      margemEstimada: finance.margin,
+      lucro: finance.margin,
       observacoes: trip.observacoes ?? trip.observacao ?? '',
       status: trip.status ?? 'Planejada',
     };
+  }
+
+  function getInitialAdvancePayment(tripId) {
+    return state.pagamentos.find((payment) => payment.viagemId === tripId && payment.isInitialAdvance) || null;
+  }
+
+  function syncInitialAdvancePayment(trip, value, { persist = true } = {}) {
+    const amount = nonNegativeMoney(value);
+    const existing = getInitialAdvancePayment(trip.id);
+    let changed = false;
+
+    if (amount === 0 && existing) {
+      state.pagamentos = state.pagamentos.filter((payment) => payment.id !== existing.id);
+      changed = true;
+    } else if (amount > 0 && existing) {
+      const origin = getPaymentSourceLabel(trip.origemAdiantamento) || 'Informado na viagem';
+      if (existing.valor !== amount || existing.origemPagamento !== origin) {
+        existing.valor = amount;
+        existing.origemPagamento = origin;
+        existing.updatedAt = new Date().toISOString();
+        changed = true;
+      }
+    } else if (amount > 0) {
+      state.pagamentos.unshift({
+        id: uid(),
+        viagemId: trip.id,
+        tipo: PAYMENT_LABELS[PAYMENT_KIND.ADVANCE],
+        origemPagamento: getPaymentSourceLabel(trip.origemAdiantamento) || 'Informado na viagem',
+        valor: amount,
+        dataPagamento: toDateInputValue(trip.createdAt) || new Date().toISOString().slice(0, 10),
+        observacao: 'Adiantamento informado ao cadastrar a viagem.',
+        isInitialAdvance: true,
+        createdAt: new Date().toISOString(),
+      });
+      changed = true;
+    }
+
+    if (changed && persist) saveState('pagamentos');
+    return changed;
+  }
+
+  function recalculateTripsForPaymentChanges(tripIds) {
+    const ids = new Set([...(Array.isArray(tripIds) ? tripIds : [tripIds])].filter(Boolean));
+    if (!ids.size) return;
+    let changed = false;
+    state.viagens = state.viagens.map((trip) => {
+      if (!ids.has(trip.id)) return trip;
+      changed = true;
+      return recalculateTripRecord({ ...trip, updatedAt: new Date().toISOString() });
+    });
+    if (changed) saveState('viagens');
   }
 
   function normalizeOptions(options, record) {
@@ -531,7 +1593,12 @@
     if (field.display) return field.display(value, record);
     if (field.type === 'money') return formatMoney(value);
     if (field.type === 'date') return formatDate(value);
-    if (field.type === 'file') return safeText(record.fileName) || 'Sem arquivo';
+    if (field.type === 'file') {
+      if (!safeText(record.fileName)) return 'Sem arquivo';
+      return record.arquivoPendenteNuvem
+        ? `${record.fileName} (reenviar para a nuvem)`
+        : record.fileName;
+    }
     if (field.type === 'select') {
       const options = normalizeOptions(field.options, record);
       const found = options.find((option) => String(option.value) === String(value));
@@ -580,7 +1647,7 @@
       return {
         title: `Viagem: ${carga?.empresa || 'Sem carga'}`,
         subtitle: motorista?.nome || 'Sem motorista',
-        details: `Frete: ${formatMoney(finance.freight)} | Combinado: ${formatMoney(finance.combined)} | Saldo: ${formatMoney(finance.balance)} | Lucro: ${formatMoney(finance.profit)}`,
+        details: `Frete: ${formatMoney(finance.freight)} | Saldo motorista: ${formatMoney(finance.balance)} | Margem: ${formatMoney(finance.margin)}`,
       };
     }
     if (type === 'Pagamento') return { title: `Pagamento: ${item.tipo || '-'}`, subtitle: formatMoney(item.valor || 0), details: `${formatDate(item.dataPagamento)} | ${item.observacao || '-'}` };
@@ -598,11 +1665,17 @@
       const finance = getTripFinancialState(item);
       lines.push(
         { label: 'Valor do frete', value: formatMoney(finance.freight) },
+        { label: 'Recebido da empresa / Metax', value: formatMoney(finance.clientReceipts) },
+        { label: 'A receber da empresa / Metax', value: formatMoney(finance.clientBalance) },
         { label: 'Valor combinado motorista', value: formatMoney(finance.combined) },
-        { label: 'Adiantamento', value: formatMoney(finance.advance) },
-        { label: 'Saldo a pagar', value: formatMoney(finance.balance) },
-        { label: 'Lucro da viagem', value: formatMoney(finance.profit) }
+        { label: 'Adiantamento pago', value: formatMoney(finance.advance) },
+        { label: 'Saldo já pago ao motorista', value: formatMoney(finance.driverBalancePayments) },
+        { label: 'Diárias', value: formatMoney(finance.dailyCost) },
+        { label: 'Ajudantes / ajuda de custo', value: formatMoney(finance.helperCost) },
+        { label: 'Saldo pendente motorista', value: formatMoney(finance.balance) },
+        { label: 'Margem estimada', value: formatMoney(finance.margin) }
       );
+      if (finance.driverOverpayment > 0) lines.push({ label: 'Pago a mais ao motorista', value: formatMoney(finance.driverOverpayment) });
     }
 
     lines.push({ label: 'Criado em', value: formatDate(item.createdAt) });
@@ -622,7 +1695,9 @@
         carga?.empresa, carga?.origem, carga?.destino,
         motorista?.nome, motorista?.telefone, motorista?.cnh,
         caminhao?.placaCavalo, caminhao?.placaCarreta,
-        finance.freight, finance.combined, finance.advance, finance.balance, finance.profit
+        finance.freight, finance.combined, finance.advance, finance.driverBalancePayments,
+        finance.dailyCost, finance.helperCost, finance.clientReceipts, finance.clientBalance,
+        finance.balance, finance.margin
       );
     }
     return normalizeText(parts.filter(Boolean).join(' '));
@@ -662,6 +1737,7 @@
 
   function createRecordCard(entry) {
     const summary = getRecordSummary(entry);
+    const accessibleName = `${entry.type}: ${summary.title}`;
     const article = document.createElement('article');
     article.className = 'record-item';
     article.dataset.recordType = entry.type;
@@ -672,9 +1748,9 @@
       <p>${escapeHtml(summary.details)}</p>
       <small>${escapeHtml(formatDate(entry.item.updatedAt || entry.item.createdAt))}</small>
       <div class="record-actions">
-        <button type="button" data-action="view">Visualizar</button>
-        <button type="button" data-action="edit">Editar</button>
-        <button type="button" data-action="delete" class="danger-btn">Apagar</button>
+        <button type="button" data-action="view" aria-label="Visualizar ${escapeHtml(accessibleName)}" title="Visualizar registro">👁️ Visualizar</button>
+        <button type="button" data-action="edit" aria-label="Editar ${escapeHtml(accessibleName)}" title="Editar registro">✏️ Editar</button>
+        <button type="button" data-action="delete" class="danger-btn" aria-label="Apagar ${escapeHtml(accessibleName)}" title="Apagar registro">🗑️ Apagar</button>
       </div>
     `;
     return article;
@@ -708,9 +1784,9 @@
     if (!card) return;
     const { recordType: type, recordId: id } = card.dataset;
     const action = button.dataset.action;
-    if (action === 'view') return openRecordModal(type, id, 'view');
-    if (action === 'edit') return openRecordModal(type, id, 'edit');
-    if (action === 'delete') return deleteCurrentRecord(type, id);
+    if (action === 'view') return openRecordModal(type, id, 'view', button);
+    if (action === 'edit') return openRecordModal(type, id, 'edit', button);
+    if (action === 'delete') return deleteCurrentRecord(type, id, button);
   }
 
   function ensureSearchSuggestionsBox() {
@@ -869,6 +1945,7 @@
   }
 
   function renderTripFinancialPreview() {
+    const hasSelectedLoad = Boolean(els.tripLoadSelect?.value);
     const finance = getTripFinancialState({
       cargaId: els.tripLoadSelect?.value || '',
       motoristaId: els.tripDriverSelect?.value || '',
@@ -876,14 +1953,18 @@
       valorFrete: els.tripFreightValue ? els.tripFreightValue.value : '',
       valorMotorista: els.tripCombinedInput ? els.tripCombinedInput.value : '',
       adiantamento: els.tripAdvanceInput ? els.tripAdvanceInput.value : '',
+      diarias: els.tripDailyInput ? els.tripDailyInput.value : '',
+      ajudantes: els.tripHelperInput ? els.tripHelperInput.value : '',
       id: '__preview__',
     });
 
-    if (els.tripFinancialFreight) els.tripFinancialFreight.textContent = finance.freight ? formatMoney(finance.freight) : 'Selecione uma carga';
+    if (els.tripFinancialFreight) els.tripFinancialFreight.textContent = hasSelectedLoad ? formatMoney(finance.freight) : 'Selecione uma carga';
     if (els.tripFinancialCombined) els.tripFinancialCombined.textContent = finance.combined ? formatMoney(finance.combined) : 'Digite o valor combinado';
     if (els.tripFinancialAdvance) els.tripFinancialAdvance.textContent = finance.advance ? formatMoney(finance.advance) : 'Digite o adiantamento';
+    if (els.tripFinancialDaily) els.tripFinancialDaily.textContent = formatMoney(finance.dailyCost);
+    if (els.tripFinancialHelpers) els.tripFinancialHelpers.textContent = formatMoney(finance.helperCost);
     if (els.tripFinancialBalance) els.tripFinancialBalance.textContent = formatMoney(finance.balance);
-    if (els.tripFinancialProfit) els.tripFinancialProfit.textContent = formatMoney(finance.profit);
+    if (els.tripFinancialMargin) els.tripFinancialMargin.textContent = formatMoney(finance.margin);
   }
 
   function getSuggestedTruckIdForDriver(driverId) {
@@ -902,14 +1983,14 @@
     const caminhao = state.caminhoes.find((item) => item.id === safeText(els.tripTruckSelect?.value));
 
     if (els.tripFreightValue) {
-      els.tripFreightValue.value = carga ? formatMoney(carga.valorFrete || 0) : '';
+      els.tripFreightValue.value = carga ? formatMoney(carga.valorFrete ?? 0) : '';
       els.tripFreightValue.readOnly = true;
       els.tripFreightValue.title = 'O valor do frete vem da carga selecionada';
     }
 
     if (ui.tripAutoFillLoad) {
       ui.tripAutoFillLoad.innerHTML = carga
-        ? `<strong>Carga</strong><div>${escapeHtml(getCargaLabel(carga))}</div><small>${escapeHtml(carga.tipoCarga || '-')} | ${escapeHtml(formatMoney(carga.valorFrete || 0))}</small>`
+        ? `<strong>Carga</strong><div>${escapeHtml(getCargaLabel(carga))}</div><small>${escapeHtml(carga.tipoCarga || '-')} | ${escapeHtml(formatMoney(carga.valorFrete ?? 0))}</small>`
         : `<strong>Carga</strong><div>Selecione uma carga para ver os dados automáticos.</div>`;
     }
 
@@ -926,6 +2007,77 @@
     }
 
     renderTripFinancialPreview();
+    updateTripWhatsAppState();
+  }
+
+  function normalizeWhatsAppPhone(phone) {
+    let digits = safeText(phone).replace(/\D/g, '');
+    if (digits.length === 10 || digits.length === 11) digits = `55${digits}`;
+    if (!/^55\d{10,11}$/.test(digits)) return '';
+    return digits;
+  }
+
+  function getTripDraftForCommunication() {
+    return {
+      id: '__whatsapp_preview__',
+      cargaId: safeText(els.tripLoadSelect?.value),
+      motoristaId: safeText(els.tripDriverSelect?.value),
+      caminhaoId: safeText(els.tripTruckSelect?.value),
+      valorFrete: els.tripFreightValue?.value || '',
+      valorMotorista: els.tripCombinedInput?.value || '',
+      adiantamento: els.tripAdvanceInput?.value || '',
+      diarias: els.tripDailyInput?.value || '',
+      ajudantes: els.tripHelperInput?.value || '',
+      origemAdiantamento: safeText(els.tripForm?.querySelector('[name="origemAdiantamento"]')?.value),
+      financialModelVersion: 1,
+      observacoes: safeText(els.tripForm?.querySelector('[name="observacoesViagem"]')?.value),
+    };
+  }
+
+  function buildTripWhatsAppMessage() {
+    const trip = getTripDraftForCommunication();
+    const carga = state.cargas.find((item) => item.id === trip.cargaId);
+    const motorista = state.motoristas.find((item) => item.id === trip.motoristaId);
+    const caminhao = state.caminhoes.find((item) => item.id === trip.caminhaoId);
+    if (!carga || !motorista) return null;
+    const finance = getTripFinancialState(trip);
+    const instructions = trip.observacoes || 'Por favor, confirme o recebimento desta programação e avise qualquer alteração.';
+    return {
+      phone: normalizeWhatsAppPhone(motorista.telefone),
+      text: [
+        `Olá, ${motorista.nome || 'motorista'}! Seguem os dados da viagem:`,
+        '',
+        `Carga: ${carga.tipoCarga || carga.empresa || 'Carga'}`,
+        `Empresa: ${carga.empresa || '-'}`,
+        `Origem: ${carga.origem || '-'}`,
+        `Destino: ${carga.destino || '-'}`,
+        `Caminhão: ${caminhao ? getTruckLabel(caminhao) : 'A confirmar'}`,
+        `Valor combinado: ${formatMoney(finance.combined)}`,
+        `Adiantamento (${getPaymentSourceLabel(trip.origemAdiantamento) || 'a confirmar'}): ${formatMoney(finance.advance)}`,
+        `Diárias previstas: ${formatMoney(finance.dailyCost)}`,
+        `Ajudante / extra: ${formatMoney(finance.helperCost)}`,
+        '',
+        `Orientações: ${instructions}`,
+      ].join('\n'),
+    };
+  }
+
+  function updateTripWhatsAppState() {
+    if (!els.tripWhatsAppBtn) return;
+    const draft = buildTripWhatsAppMessage();
+    const motorista = state.motoristas.find((item) => item.id === safeText(els.tripDriverSelect?.value));
+    const canSend = Boolean(draft?.phone);
+    els.tripWhatsAppBtn.disabled = !canSend;
+    if (!els.tripWhatsAppStatus) return;
+    if (!motorista) els.tripWhatsAppStatus.textContent = 'Selecione um motorista para preparar a mensagem.';
+    else if (!canSend) els.tripWhatsAppStatus.textContent = 'Cadastre um telefone válido para este motorista antes de enviar.';
+    else els.tripWhatsAppStatus.textContent = `Mensagem pronta para ${motorista.nome || 'o motorista'}.`;
+  }
+
+  function handleTripWhatsApp() {
+    const message = buildTripWhatsAppMessage();
+    if (!message?.phone) return alert('Selecione uma carga e um motorista com telefone válido antes de abrir o WhatsApp.');
+    window.open(`https://wa.me/${message.phone}?text=${encodeURIComponent(message.text)}`, '_blank', 'noopener,noreferrer');
   }
 
   function ensureRecordModal() {
@@ -935,11 +2087,14 @@
       overlay = document.createElement('div');
       overlay.id = 'recordModalOverlay';
       overlay.className = 'modal-overlay hidden';
+      overlay.setAttribute('role', 'dialog');
+      overlay.setAttribute('aria-modal', 'true');
+      overlay.setAttribute('aria-labelledby', 'modalTitle');
       overlay.innerHTML = `
-        <div class="record-modal">
+        <div class="record-modal" tabindex="-1">
           <div class="record-modal-header">
             <h3 id="modalTitle">Registro</h3>
-            <button type="button" id="closeModalBtn" class="close-modal-btn">✕</button>
+            <button type="button" id="closeModalBtn" class="close-modal-btn" aria-label="Fechar o registro">✕</button>
           </div>
           <div class="record-modal-content" id="recordModalContent"></div>
           <div class="record-modal-actions">
@@ -960,6 +2115,9 @@
     els.saveEditBtn = overlay.querySelector('#saveEditBtn');
     els.cancelEditBtn = overlay.querySelector('#cancelEditBtn');
     els.deleteRecordBtn = overlay.querySelector('#deleteRecordBtn');
+    const dialog = overlay.querySelector('.record-modal');
+    if (dialog) dialog.tabIndex = -1;
+    if (els.closeModalBtn) els.closeModalBtn.setAttribute('aria-label', 'Fechar o registro');
   }
 
   function setModalButtonsForMode(mode) {
@@ -970,6 +2128,9 @@
     els.deleteRecordBtn.classList.toggle('hidden', !isView);
     els.saveEditBtn.classList.toggle('hidden', !isEdit);
     els.cancelEditBtn.classList.toggle('hidden', !isEdit);
+    const recordName = modalState.type ? modalState.type.toLowerCase() : 'registro';
+    els.editRecordBtn.setAttribute('aria-label', `Editar ${recordName}`);
+    els.deleteRecordBtn.setAttribute('aria-label', `Apagar ${recordName}`);
   }
 
   function renderModalView(record) {
@@ -1017,7 +2178,7 @@
     }
   }
 
-  function openRecordModal(type, id, mode = 'view') {
+  function openRecordModal(type, id, mode = 'view', trigger = document.activeElement) {
     ensureRecordModal();
     const record = getRecord(type, id);
     if (!record) return alert('Registro não encontrado.');
@@ -1025,11 +2186,18 @@
     modalState.id = id;
     modalState.mode = mode;
     modalState.dirty = false;
+    modalState.trigger = trigger instanceof HTMLElement ? trigger : null;
     if (els.modalTitle) els.modalTitle.textContent = mode === 'edit' ? `Editar ${type.toLowerCase()}` : `${type}`;
     if (mode === 'edit') renderModalEdit(record);
     else renderModalView(record);
     if (els.modalOverlay) els.modalOverlay.classList.remove('hidden');
     setModalButtonsForMode(mode);
+    window.setTimeout(() => {
+      const target = mode === 'edit'
+        ? ui.editForm?.querySelector('input, select, textarea')
+        : els.editRecordBtn;
+      target?.focus();
+    }, 0);
   }
 
   function closeRecordModal(force = false) {
@@ -1039,31 +2207,41 @@
         return;
       }
     }
+    const trigger = modalState.trigger;
     if (els.modalOverlay) els.modalOverlay.classList.add('hidden');
     modalState.type = null;
     modalState.id = null;
     modalState.mode = 'view';
     modalState.dirty = false;
+    modalState.trigger = null;
     ui.editForm = null;
+    if (trigger instanceof HTMLElement && trigger.isConnected) {
+      window.setTimeout(() => trigger.focus(), 0);
+    }
   }
 
   function markModalDirty() {
     modalState.dirty = true;
   }
 
-  function saveCurrentRecordEdit() {
+  async function saveCurrentRecordEdit() {
     if (!modalState.type || !modalState.id || !ui.editForm) return;
     const original = getRecord(modalState.type, modalState.id);
     if (!original) return;
     const schema = RECORD_SCHEMAS[modalState.type] || [];
     const formData = new FormData(ui.editForm);
     let nextRecord = { ...original };
+    let selectedFile = null;
+    let attachmentPending = false;
 
     schema.forEach((field) => {
       if (field.type === 'file') {
         const fileInput = ui.editForm.querySelector(`input[name="${field.name}"]`);
         const file = fileInput?.files?.[0];
-        if (file) nextRecord.fileName = file.name;
+        if (file?.name) {
+          selectedFile = file;
+          nextRecord.fileName = file.name;
+        }
         else if (!nextRecord.fileName) nextRecord.fileName = original.fileName || '';
         return;
       }
@@ -1071,69 +2249,158 @@
       nextRecord[field.name] = field.type === 'money' ? moneyToNumber(String(value || 0)) : safeText(value);
     });
 
+    if (modalState.type === 'Documento') {
+      if (!nextRecord.tipo || !nextRecord.relacionado || !nextRecord.relacionadoId) {
+        return alert('Informe o tipo e o registro ao qual este documento pertence.');
+      }
+      if (!getDocumentRelatedOptions(nextRecord.relacionado).some((option) => option.value === nextRecord.relacionadoId)) {
+        return alert('O registro relacionado não foi encontrado. Atualize a tela e tente novamente.');
+      }
+      if (selectedFile) {
+        if (activeCloudUser && getSupabaseClient()) {
+          try {
+            Object.assign(nextRecord, await uploadDocumentFile(selectedFile, nextRecord.id));
+          } catch (error) {
+            console.warn('Falha no upload da edição do documento.', error);
+            return alert('Não foi possível enviar o arquivo privado. A edição não foi salva para evitar um anexo inexistente.');
+          }
+        } else {
+          attachmentPending = true;
+          Object.assign(nextRecord, {
+            storagePath: '',
+            contentType: '',
+            fileSize: 0,
+            arquivoPendenteNuvem: true,
+          });
+        }
+      }
+    }
+
     if (modalState.type === 'Viagem') {
+      const negativeValue = ['valorFrete', 'valorMotorista', 'adiantamento', 'diarias', 'ajudantes']
+        .some((fieldName) => moneyToNumber(nextRecord[fieldName] ?? 0) < 0);
+      if (negativeValue) return alert('Os valores financeiros não podem ser negativos.');
+      // Ao editar uma viagem antiga, o adiantamento antigo é migrado uma vez
+      // para a caderneta. O cálculo passa a usar somente esse lançamento.
+      nextRecord.financialModelVersion = FINANCIAL_MODEL_VERSION;
+      const initialAdvanceChanged = syncInitialAdvancePayment(nextRecord, nextRecord.adiantamento, { persist: false });
       nextRecord = recalculateTripRecord(nextRecord);
       const driver = state.motoristas.find((item) => item.id === nextRecord.motoristaId);
       if (driver && nextRecord.caminhaoId) {
         driver.truckId = nextRecord.caminhaoId;
         saveState('motoristas');
       }
+      if (initialAdvanceChanged) saveState('pagamentos');
+    }
+
+    if (modalState.type === 'Pagamento') {
+      nextRecord.tipo = getPaymentLabel(nextRecord.tipo);
+      nextRecord.origemPagamento = getPaymentSourceLabel(nextRecord.origemPagamento);
+      if (!nextRecord.viagemId || !state.viagens.some((trip) => trip.id === nextRecord.viagemId)) {
+        return alert('Selecione uma viagem válida para o pagamento.');
+      }
+      if (!normalizePaymentType(nextRecord.tipo)) return alert('Escolha um tipo de pagamento válido.');
+      if (moneyToNumber(nextRecord.valor) <= 0) return alert('Informe um valor maior que R$ 0,00.');
     }
 
     nextRecord.updatedAt = new Date().toISOString();
     updateRecord(modalState.type, modalState.id, nextRecord);
+    if (modalState.type === 'Pagamento') {
+      recalculateTripsForPaymentChanges([original.viagemId, nextRecord.viagemId]);
+    }
     modalState.dirty = false;
     closeRecordModal(true);
     renderCurrentView();
     updateTripAutofillPreview();
+    if (attachmentPending) alert('A edição foi salva, mas o arquivo precisa ser enviado novamente após configurar a nuvem.');
   }
 
-  function deleteCurrentRecord(type, id) {
-    if (!getRecord(type, id)) return;
-    if (!confirm('Deseja realmente apagar este registro?')) return;
-    deleteRecord(type, id);
-    closeRecordModal(true);
-    renderCurrentView();
-    updateTripAutofillPreview();
+  function setDeleteConfirmBusy(isBusy) {
+    if (els.confirmDeleteBtn) els.confirmDeleteBtn.disabled = isBusy;
+    if (els.cancelDeleteBtn) els.cancelDeleteBtn.disabled = isBusy;
   }
 
-  function getQuickFilterEntries(filterKey) {
-    if (filterKey === 'openLoads') {
-      const entries = state.cargas
-        .filter((item) => normalizeText(item.status) !== 'finalizada')
-        .map((item) => ({ type: 'Carga', item }));
-      return { entries, total: entries.length, ...QUICK_FILTERS.openLoads };
+  function closeDeleteConfirmDialog({ restoreFocus = true } = {}) {
+    const trigger = deleteDialogState.trigger;
+    if (els.deleteConfirmOverlay) els.deleteConfirmOverlay.classList.add('hidden');
+    deleteDialogState.type = null;
+    deleteDialogState.id = null;
+    deleteDialogState.trigger = null;
+    setDeleteConfirmBusy(false);
+    if (restoreFocus && trigger instanceof HTMLElement && trigger.isConnected) {
+      window.setTimeout(() => trigger.focus(), 0);
     }
-    if (filterKey === 'activeTrips') {
-      const entries = state.viagens
-        .filter((trip) => {
-          const status = normalizeText(trip.status);
-          return status === 'em andamento' || status === 'carregada';
-        })
-        .map((item) => ({ type: 'Viagem', item }));
-      return { entries, total: entries.length, ...QUICK_FILTERS.activeTrips };
+  }
+
+  function openDeleteConfirmDialog(type, id, trigger = document.activeElement) {
+    const record = getRecord(type, id);
+    if (!record) return alert('Registro não encontrado. Atualize a página e tente novamente.');
+    const blockMessage = getDeleteBlockMessage(type, record);
+    if (blockMessage) return alert(blockMessage);
+    if (!els.deleteConfirmOverlay || !els.deleteConfirmTitle || !els.deleteConfirmMessage) {
+      return alert('Não foi possível abrir a confirmação de exclusão. Atualize a página e tente novamente.');
     }
-    if (filterKey === 'pendingFinance') {
-      const entries = state.viagens
-        .filter((trip) => getTripFinancialState(trip).balance > 0)
-        .map((item) => ({ type: 'Viagem', item }));
-      return { entries, total: entries.length, ...QUICK_FILTERS.pendingFinance };
+    deleteDialogState.type = type;
+    deleteDialogState.id = id;
+    deleteDialogState.trigger = trigger instanceof HTMLElement ? trigger : null;
+    els.deleteConfirmTitle.textContent = `Apagar ${type.toLowerCase()}?`;
+    els.deleteConfirmMessage.textContent = `Tem certeza que deseja apagar “${getRecordDeleteLabel(type, record)}”? Esta ação não pode ser desfeita.`;
+    els.deleteConfirmOverlay.classList.remove('hidden');
+    setDeleteConfirmBusy(false);
+    window.setTimeout(() => els.cancelDeleteBtn?.focus(), 0);
+  }
+
+  async function deleteDocumentStorageFile(record) {
+    const storagePath = safeText(record.storagePath);
+    if (!storagePath) return true;
+    const client = getSupabaseClient();
+    if (!client || !activeCloudUser) {
+      alert('Não foi possível apagar o arquivo privado agora. O documento foi mantido para evitar deixar um arquivo sem registro.');
+      return false;
     }
-    if (filterKey === 'docsExpiring') {
-      const entries = [
-        ...state.motoristas
-          .filter((item) => isWithinNextDays(item.vencimentoCnh, 30))
-          .map((item) => ({ type: 'Motorista', item })),
-        ...state.caminhoes
-          .filter((item) => isWithinNextDays(item.vencimentoDocumento, 30))
-          .map((item) => ({ type: 'Caminhão', item })),
-        ...state.documentos
-          .filter((item) => isWithinNextDays(getDocumentDueDate(item), 30))
-          .map((item) => ({ type: 'Documento', item })),
-      ];
-      return { entries, total: entries.length, ...QUICK_FILTERS.docsExpiring };
+    const { error } = await client.storage.from('documentos-privados').remove([storagePath]);
+    if (!error) return true;
+    console.warn('Não foi possível apagar o arquivo privado do documento.', error);
+    alert('Não foi possível apagar o arquivo privado agora. O documento foi mantido para evitar deixar um arquivo sem registro.');
+    return false;
+  }
+
+  async function confirmDeleteCurrentRecord() {
+    const { type, id } = deleteDialogState;
+    const record = type && id ? getRecord(type, id) : null;
+    if (!type || !id || !record) return closeDeleteConfirmDialog();
+    const blockMessage = getDeleteBlockMessage(type, record);
+    if (blockMessage) {
+      alert(blockMessage);
+      closeDeleteConfirmDialog();
+      return;
     }
-    return { entries: [], total: 0, title: 'Filtro', subtitle: '' };
+    setDeleteConfirmBusy(true);
+    try {
+      if (type === 'Documento' && !(await deleteDocumentStorageFile(record))) return;
+      if (!deleteRecord(type, id)) return;
+      if (type === 'Pagamento') recalculateTripsForPaymentChanges(record.viagemId);
+      const openedRecordModal = (
+        modalState.type === type &&
+        modalState.id === id &&
+        els.modalOverlay &&
+        !els.modalOverlay.classList.contains('hidden')
+      );
+      closeDeleteConfirmDialog({ restoreFocus: false });
+      if (openedRecordModal) closeRecordModal(true);
+      renderCurrentView();
+      updateTripAutofillPreview();
+      announceRecordAction(`${type} apagado com sucesso.`);
+    } catch (error) {
+      console.warn('Não foi possível apagar o registro.', error);
+      alert('Não foi possível apagar este registro agora. Tente novamente em alguns instantes.');
+    } finally {
+      setDeleteConfirmBusy(false);
+    }
+  }
+
+  function deleteCurrentRecord(type, id, trigger) {
+    openDeleteConfirmDialog(type, id, trigger);
   }
 
   function getCurrentViewData() {
@@ -1236,26 +2503,6 @@
     }
     renderCurrentView();
     if (ui.searchPanel) scrollToElement(ui.searchPanel);
-  }
-
-  function setupIndicatorClicks() {
-    const cards = document.querySelectorAll('.stat-card');
-    const mapping = ['openLoads', 'activeTrips', 'pendingFinance', 'docsExpiring'];
-    cards.forEach((card, index) => {
-      const filterKey = mapping[index];
-      if (!filterKey) return;
-      card.style.cursor = 'pointer';
-      card.setAttribute('role', 'button');
-      card.tabIndex = 0;
-      const activate = () => applyQuickFilter(filterKey);
-      card.addEventListener('click', activate);
-      card.addEventListener('keydown', (event) => {
-        if (event.key === 'Enter' || event.key === ' ') {
-          event.preventDefault();
-          activate();
-        }
-      });
-    });
   }
 
   function handleSearchInput(event) {
@@ -1371,6 +2618,8 @@
     if (els.tripTruckSelect) els.tripTruckSelect.addEventListener('change', refreshFromSelections);
     if (els.tripCombinedInput) els.tripCombinedInput.addEventListener('input', () => renderTripFinancialPreview());
     if (els.tripAdvanceInput) els.tripAdvanceInput.addEventListener('input', () => renderTripFinancialPreview());
+    if (els.tripDailyInput) els.tripDailyInput.addEventListener('input', () => renderTripFinancialPreview());
+    if (els.tripHelperInput) els.tripHelperInput.addEventListener('input', () => renderTripFinancialPreview());
   }
 
   function handleTripSubmit(event) {
@@ -1381,18 +2630,27 @@
     const caminhaoId = safeText(data.get('caminhaoViagem'));
     if (!cargaId || !motoristaId || !caminhaoId) return alert('Selecione carga, motorista e caminhão.');
     const carga = state.cargas.find((item) => item.id === cargaId);
+    if (!carga) return alert('A carga selecionada não foi encontrada. Atualize a página e tente novamente.');
+    const freightInput = data.get('valorFreteViagem');
     let item = {
       id: uid(),
       cargaId,
       motoristaId,
       caminhaoId,
-      valorFrete: moneyToNumber(String(data.get('valorFreteViagem') || carga?.valorFrete || 0)),
+      // Não use || aqui: R$ 0,00 é um valor válido e não pode buscar o frete da carga.
+      valorFrete: hasMoneyValue(freightInput) ? moneyToNumber(String(freightInput)) : nonNegativeMoney(carga.valorFrete ?? 0),
       valorMotorista: moneyToNumber(String(data.get('valorMotorista') || 0)),
       adiantamento: moneyToNumber(String(data.get('adiantamento') || 0)),
+      diarias: getFormMoneyValue(data, ['diariasViagem', 'diariaPrevista', 'diarias']),
+      ajudantes: getFormMoneyValue(data, ['ajudantesViagem', 'ajudantePrevisto', 'ajudantes']),
+      origemAdiantamento: safeText(data.get('origemAdiantamento')),
+      financialModelVersion: FINANCIAL_MODEL_VERSION,
       status: safeText(data.get('statusViagem')),
       observacoes: safeText(data.get('observacoesViagem')),
       createdAt: new Date().toISOString(),
     };
+    const negativeValue = [item.valorFrete, item.valorMotorista, item.adiantamento, item.diarias, item.ajudantes].some((value) => value < 0);
+    if (negativeValue) return alert('Os valores financeiros não podem ser negativos.');
     item = recalculateTripRecord(item);
     const driver = state.motoristas.find((m) => m.id === motoristaId);
     if (driver && caminhaoId) {
@@ -1400,7 +2658,10 @@
       saveState('motoristas');
     }
     state.viagens.unshift(item);
+    const initialAdvanceChanged = syncInitialAdvancePayment(item, item.adiantamento, { persist: false });
+    state.viagens[0] = recalculateTripRecord(item);
     saveState('viagens');
+    if (initialAdvanceChanged) saveState('pagamentos');
     event.currentTarget.reset();
     renderCurrentView();
     updateTripAutofillPreview();
@@ -1413,37 +2674,94 @@
     const item = {
       id: uid(),
       viagemId: safeText(data.get('viagemPagamento')),
-      tipo: safeText(data.get('tipoPagamento')),
+      tipo: getPaymentLabel(data.get('tipoPagamento')),
+      origemPagamento: getPaymentSourceLabel(data.get('origemPagamento')),
       valor: moneyToNumber(String(data.get('valorPagamento') || 0)),
       dataPagamento: safeText(data.get('dataPagamento')),
       observacao: safeText(data.get('observacaoPagamento')),
       createdAt: new Date().toISOString(),
     };
     if (!item.viagemId) return alert('Selecione uma viagem.');
+    if (!state.viagens.some((trip) => trip.id === item.viagemId)) return alert('A viagem selecionada não foi encontrada.');
+    if (!normalizePaymentType(item.tipo)) return alert('Escolha um tipo de pagamento válido.');
+    if (item.valor <= 0) return alert('Informe um valor maior que R$ 0,00.');
     state.pagamentos.unshift(item);
     saveState('pagamentos');
+    recalculateTripsForPaymentChanges(item.viagemId);
     event.currentTarget.reset();
     renderCurrentView();
     scrollToElement(activeQuickFilter || currentSearchQuery ? ui.searchPanel : els.recordsSection);
   }
 
-  function handleDocumentSubmit(event) {
+  function getSelectedFile(formData, name = 'arquivoDocumento') {
+    const value = formData.get(name);
+    return value && typeof value === 'object' && safeText(value.name) ? value : null;
+  }
+
+  function safeFileName(name) {
+    const cleaned = safeText(name)
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/[^a-zA-Z0-9._-]+/g, '-');
+    return cleaned || `arquivo-${Date.now()}`;
+  }
+
+  async function uploadDocumentFile(file, documentId) {
+    const client = getSupabaseClient();
+    if (!client || !activeCloudUser) return null;
+    const path = `${activeCloudUser.id}/documentos/${documentId}/${safeFileName(file.name)}`;
+    const { data, error } = await client.storage.from('documentos-privados').upload(path, file, {
+      upsert: true,
+      contentType: file.type || undefined,
+    });
+    if (error) throw error;
+    return {
+      storagePath: data?.path || path,
+      contentType: file.type || '',
+      fileSize: Number(file.size || 0),
+      arquivoPendenteNuvem: false,
+    };
+  }
+
+  async function handleDocumentSubmit(event) {
     event.preventDefault();
     const data = new FormData(event.currentTarget);
-    const file = data.get('arquivoDocumento');
+    const file = getSelectedFile(data);
     const item = {
       id: uid(),
       tipo: safeText(data.get('tipoDocumento')),
       relacionado: safeText(data.get('relacionadoDocumento')),
+      relacionadoId: safeText(data.get('relacionadoId')),
       vencimentoDocumentoSistema: safeText(data.get('vencimentoDocumentoSistema')),
-      fileName: file && typeof file === 'object' ? file.name : '',
+      fileName: file?.name || '',
       observacoes: safeText(data.get('observacoesDocumento')),
       createdAt: new Date().toISOString(),
     };
+    if (!item.tipo || !item.relacionado || !item.relacionadoId) {
+      return alert('Informe o tipo e o registro ao qual este documento pertence.');
+    }
+    if (!getDocumentRelatedOptions(item.relacionado).some((option) => option.value === item.relacionadoId)) {
+      return alert('O registro relacionado não foi encontrado. Atualize a tela e tente novamente.');
+    }
+    let attachmentPending = false;
+    if (file) {
+      if (activeCloudUser && getSupabaseClient()) {
+        try {
+          Object.assign(item, await uploadDocumentFile(file, item.id));
+        } catch (error) {
+          console.warn('Falha no upload do documento.', error);
+          return alert('Não foi possível enviar o arquivo privado. O documento não foi salvo para evitar um anexo inexistente.');
+        }
+      } else {
+        attachmentPending = true;
+        item.arquivoPendenteNuvem = true;
+      }
+    }
     state.documentos.unshift(item);
     saveState('documentos');
     event.currentTarget.reset();
     renderCurrentView();
+    if (attachmentPending) alert('Os dados do documento foram salvos, mas o arquivo precisa ser enviado novamente após configurar a nuvem.');
     scrollToElement(activeQuickFilter || currentSearchQuery ? ui.searchPanel : els.recordsSection);
   }
 
@@ -1461,6 +2779,7 @@
         modalState.dirty = false;
         renderModalEdit(record);
         setModalButtonsForMode('edit');
+        window.setTimeout(() => ui.editForm?.querySelector('input, select, textarea')?.focus(), 0);
       });
     }
 
@@ -1476,9 +2795,12 @@
     if (els.deleteRecordBtn) {
       els.deleteRecordBtn.addEventListener('click', () => {
         if (!modalState.type || !modalState.id) return;
-        deleteCurrentRecord(modalState.type, modalState.id);
+        deleteCurrentRecord(modalState.type, modalState.id, els.deleteRecordBtn);
       });
     }
+
+    if (els.cancelDeleteBtn) els.cancelDeleteBtn.addEventListener('click', () => closeDeleteConfirmDialog());
+    if (els.confirmDeleteBtn) els.confirmDeleteBtn.addEventListener('click', () => confirmDeleteCurrentRecord());
 
     if (els.modalOverlay) {
       els.modalOverlay.addEventListener('click', (event) => {
@@ -1486,7 +2808,22 @@
       });
     }
 
+    if (els.deleteConfirmOverlay) {
+      els.deleteConfirmOverlay.addEventListener('click', (event) => {
+        if (event.target === els.deleteConfirmOverlay && !els.confirmDeleteBtn?.disabled) closeDeleteConfirmDialog();
+      });
+    }
+
     window.addEventListener('keydown', (event) => {
+      if (
+        event.key === 'Escape' &&
+        els.deleteConfirmOverlay &&
+        !els.deleteConfirmOverlay.classList.contains('hidden') &&
+        !els.confirmDeleteBtn?.disabled
+      ) {
+        closeDeleteConfirmDialog();
+        return;
+      }
       if (event.key === 'Escape' && els.modalOverlay && !els.modalOverlay.classList.contains('hidden')) {
         closeRecordModal(false);
       }
@@ -1547,7 +2884,37 @@
     });
   }
 
+  function setupAccessEvents() {
+    if (els.loginForm) els.loginForm.addEventListener('submit', handleLoginSubmit);
+    if (els.signupBtn) els.signupBtn.addEventListener('click', handleSignup);
+    if (els.forgotPasswordBtn) els.forgotPasswordBtn.addEventListener('click', openPasswordResetRequest);
+    if (els.passwordResetRequestForm) els.passwordResetRequestForm.addEventListener('submit', handlePasswordResetRequest);
+    if (els.cancelPasswordResetRequestBtn) els.cancelPasswordResetRequestBtn.addEventListener('click', returnToLoginFromPasswordReset);
+    if (els.passwordUpdateForm) els.passwordUpdateForm.addEventListener('submit', handlePasswordUpdate);
+    if (els.cancelPasswordUpdateBtn) els.cancelPasswordUpdateBtn.addEventListener('click', cancelPasswordUpdate);
+    if (els.btnLogin) {
+      els.btnLogin.addEventListener('click', () => {
+        if (!document.body.classList.contains('login-open')) handleLogout();
+        else els.loginEmail?.focus();
+      });
+    }
+    if (els.closePwaGuideBtn) {
+      els.closePwaGuideBtn.addEventListener('click', () => {
+        if (els.pwaInstallGuide) els.pwaInstallGuide.hidden = true;
+        localStorage.setItem(PWA_GUIDE_KEY, '1');
+      });
+    }
+    if (els.pwaInstallGuide && localStorage.getItem(PWA_GUIDE_KEY)) els.pwaInstallGuide.hidden = true;
+    if (els.documentRelatedType) {
+      els.documentRelatedType.addEventListener('change', () => {
+        if (els.documentRelatedSelect) els.documentRelatedSelect.value = '';
+        refreshDocumentRelatedSelect();
+      });
+    }
+  }
+
   function setupEvents() {
+    setupAccessEvents();
     setupSearchEvents();
     if (els.loadForm) els.loadForm.addEventListener('submit', handleLoadSubmit);
     if (els.driverForm) els.driverForm.addEventListener('submit', handleDriverSubmit);
@@ -1555,7 +2922,7 @@
     if (els.tripForm) els.tripForm.addEventListener('submit', handleTripSubmit);
     if (els.paymentForm) els.paymentForm.addEventListener('submit', handlePaymentSubmit);
     if (els.documentForm) els.documentForm.addEventListener('submit', handleDocumentSubmit);
-    if (els.btnLogin) els.btnLogin.addEventListener('click', () => alert('A etapa de login será ligada depois com Supabase.'));
+    if (els.tripWhatsAppBtn) els.tripWhatsAppBtn.addEventListener('click', handleTripWhatsApp);
     if (ui.recordsTopBtn) ui.recordsTopBtn.addEventListener('click', () => scrollToTop());
     window.addEventListener('hashchange', syncTabs);
   }
@@ -1616,6 +2983,7 @@
 
   function init() {
     loadState();
+    setApplicationAccess(false);
     removeQuickActionsSection();
     ensureSearchPanel();
     ensureRecordsToolbar();
@@ -1625,6 +2993,13 @@
     bindRecordContainerActions(els.recentRecords);
     bindRecordContainerActions(ui.searchResultsList);
     initFromUrl();
+    passwordRecoveryMode = isPasswordRecoveryCallback();
+    if (passwordRecoveryMode) {
+      setAuthView('update', { focus: false });
+      setPasswordUpdateStatus('Verificando o link seguro para trocar sua senha…');
+    } else {
+      setAuthView('login', { focus: false });
+    }
     setupEvents();
     setupModalEvents();
     setupTripSelectListeners();
@@ -1635,6 +3010,16 @@
     updateStats();
     renderCurrentView();
     syncTabs();
+    registerPwaServiceWorker();
+    setupSupabaseAuthListener();
+    restoreAccess().catch((error) => {
+      console.warn('Não foi possível restaurar o acesso.', error);
+      if (passwordRecoveryMode) {
+        showPasswordRecoveryUnavailable('Não foi possível validar este link agora. Peça um novo link e tente novamente.');
+      } else {
+        setLoginStatus('Não foi possível verificar a sessão agora. Tente entrar novamente.', true);
+      }
+    });
     if (currentSearchQuery && ui.searchPanel) setTimeout(() => scrollToElement(ui.searchPanel), 100);
   }
 
@@ -1647,7 +3032,7 @@
 
   items.forEach((item) => {
     const option = document.createElement('option');
-    option.value = item.id;
+    option.value = item.id ?? item.value ?? '';
     option.textContent = labelBuilder(item);
     selectEl.appendChild(option);
   });
@@ -1655,6 +3040,22 @@
   if ([...selectEl.options].some((opt) => opt.value === currentValue)) {
     selectEl.value = currentValue;
   }
+}
+
+function refreshDocumentRelatedSelect() {
+  if (!els.documentRelatedSelect) return;
+  const relatedType = safeText(els.documentRelatedType?.value);
+  if (!relatedType) {
+    els.documentRelatedSelect.innerHTML = '<option value="">Selecione primeiro o tipo</option>';
+    return;
+  }
+  const options = getDocumentRelatedOptions(relatedType);
+  populateSelect(
+    els.documentRelatedSelect,
+    options,
+    options.length ? 'Selecione o registro' : 'Nenhum registro cadastrado',
+    (item) => item.label
+  );
 }
 
 function refreshSelects() {
@@ -1681,6 +3082,12 @@ function refreshSelects() {
   );
 
   populateSelect(
+    els.driverTruckSelect,
+    state.caminhoes,
+    'Sem caminhão habitual',
+    (item) => getTruckLabel(item)
+  );
+  populateSelect(
     els.paymentTripSelect,
     state.viagens,
     'Selecione uma viagem',
@@ -1689,6 +3096,7 @@ function refreshSelects() {
       return `${carga?.empresa || 'Viagem'} — ${item.status || 'Sem status'}`;
     }
   );
+  refreshDocumentRelatedSelect();
 }
 
   document.addEventListener('DOMContentLoaded', init);
