@@ -283,7 +283,6 @@
         options: [
           { value: ADVANCE_PAYER.MARIO, label: DEFAULT_ADVANCE_PAYER_LABEL },
           { value: ADVANCE_PAYER.TRANSPORTADORA, label: 'Transportadora — Alexandre' },
-          { value: ADVANCE_PAYER.GRANDPA, label: 'Avô' },
           { value: ADVANCE_PAYER.OTHER, label: 'Outra pessoa' },
         ],
       },
