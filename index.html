@@ -539,10 +539,17 @@
           <label>
             Quem pagou o adiantamento?
             <select name="origemAdiantamento">
-              <option value="avo">Avô</option>
+              <option value="mario_antonio_cardoso" selected>Mário Antônio Cardoso</option>
               <option value="transportadora">Transportadora — Alexandre</option>
-              <option value="outro">Outro</option>
+              <option value="avo">Avô</option>
+              <option value="outro">Outra pessoa</option>
             </select>
+          </label>
+
+          <label class="advance-payer-name-field hidden">
+            Nome da outra pessoa
+            <input type="text" name="nomePagadorAdiantamento"
+              placeholder="Digite o nome de quem pagou" autocomplete="name" />
           </label>
 
           <label>
@@ -807,7 +814,7 @@
         <h2>Registros recentes</h2>
 
         <p>
-          Histórico completo do sistema. Em cada registro, use Visualizar, Editar ou Apagar.
+          Histórico completo do sistema. Em cada registro, use Visualizar, Editar ou Excluir.
         </p>
       </div>
 
@@ -881,7 +888,7 @@
         <button type="button"
           id="deleteRecordBtn"
           class="danger-btn">
-          🗑️ Apagar
+          🗑️ Excluir
         </button>
 
       </div>
@@ -896,7 +903,7 @@
     <section class="record-modal delete-confirm-modal" tabindex="-1">
 
       <div class="record-modal-header">
-        <h3 id="deleteConfirmTitle">Apagar registro?</h3>
+        <h3 id="deleteConfirmTitle">Excluir registro?</h3>
       </div>
 
       <p id="deleteConfirmMessage" class="delete-confirm-message"></p>
@@ -907,7 +914,7 @@
         </button>
 
         <button type="button" id="confirmDeleteBtn" class="danger-btn">
-          🗑️ Sim, apagar
+          🗑️ Sim, excluir
         </button>
       </div>
 

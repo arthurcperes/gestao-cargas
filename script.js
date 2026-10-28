@@ -105,6 +105,8 @@
     tripFreightValue: document.getElementById('tripFreightValue'),
     tripCombinedInput: document.querySelector('#tripForm input[name="valorMotorista"]'),
     tripAdvanceInput: document.querySelector('#tripForm input[name="adiantamento"]'),
+    tripAdvancePayerSelect: document.querySelector('#tripForm select[name="origemAdiantamento"]'),
+    tripAdvancePayerNameInput: document.querySelector('#tripForm input[name="nomePagadorAdiantamento"]'),
     // Estes campos são opcionais enquanto o formulário é atualizado.
     tripDailyInput:
       document.getElementById('tripDailyValue') ||
@@ -178,6 +180,15 @@
     Pagamento: 'pagamentos',
     Documento: 'documentos',
   };
+
+  const ADVANCE_PAYER = Object.freeze({
+    MARIO: 'mario_antonio_cardoso',
+    TRANSPORTADORA: 'transportadora',
+    GRANDPA: 'avo',
+    OTHER: 'outro',
+  });
+  const DEFAULT_ADVANCE_PAYER = ADVANCE_PAYER.MARIO;
+  const DEFAULT_ADVANCE_PAYER_LABEL = 'Mário Antônio Cardoso';
 
   const RECORD_SCHEMAS = {
     Carga: [
@@ -270,10 +281,16 @@
         label: 'Quem pagou o adiantamento?',
         type: 'select',
         options: [
-          { value: 'avo', label: 'Avô' },
-          { value: 'transportadora', label: 'Transportadora — Alexandre' },
-          { value: 'outro', label: 'Outro' },
+          { value: ADVANCE_PAYER.MARIO, label: DEFAULT_ADVANCE_PAYER_LABEL },
+          { value: ADVANCE_PAYER.TRANSPORTADORA, label: 'Transportadora — Alexandre' },
+          { value: ADVANCE_PAYER.GRANDPA, label: 'Avô' },
+          { value: ADVANCE_PAYER.OTHER, label: 'Outra pessoa' },
         ],
+      },
+      {
+        name: 'nomePagadorAdiantamento',
+        label: 'Nome da outra pessoa',
+        type: 'text',
       },
       { name: 'diarias', label: 'Diárias previstas', type: 'money' },
       { name: 'ajudantes', label: 'Ajudantes / ajuda de custo prevista', type: 'money' },
@@ -365,7 +382,14 @@
     },
   };
 
-  const TRIP_VIEW_SKIP = new Set(['valorFrete', 'valorMotorista', 'adiantamento', 'diarias', 'ajudantes']);
+  const TRIP_VIEW_SKIP = new Set([
+    'valorFrete',
+    'valorMotorista',
+    'adiantamento',
+    'diarias',
+    'ajudantes',
+    'nomePagadorAdiantamento',
+  ]);
 
   const FINANCIAL_MODEL_VERSION = 2;
   const PAYMENT_KIND = Object.freeze({
@@ -386,9 +410,10 @@
     [PAYMENT_KIND.CLIENT_RECEIPT]: 'Recebimento cliente',
   });
   const PAYMENT_SOURCE_LABELS = Object.freeze({
+    [ADVANCE_PAYER.MARIO]: DEFAULT_ADVANCE_PAYER_LABEL,
     avo: 'Avô',
     transportadora: 'Transportadora — Alexandre',
-    outro: 'Outro',
+    outro: 'Outra pessoa',
   });
 
   function uid() {
@@ -457,10 +482,55 @@
 
   function getPaymentSourceLabel(value) {
     const normalized = normalizeText(value);
-    if (normalized === 'avo') return PAYMENT_SOURCE_LABELS.avo;
-    if (normalized === 'transportadora' || normalized.includes('alexandre')) return PAYMENT_SOURCE_LABELS.transportadora;
-    if (normalized === 'outro') return PAYMENT_SOURCE_LABELS.outro;
+    if (
+      normalized === ADVANCE_PAYER.MARIO ||
+      normalized === normalizeText(DEFAULT_ADVANCE_PAYER_LABEL)
+    ) return PAYMENT_SOURCE_LABELS[ADVANCE_PAYER.MARIO];
+    if (normalized === ADVANCE_PAYER.GRANDPA) return PAYMENT_SOURCE_LABELS.avo;
+    if (normalized === ADVANCE_PAYER.TRANSPORTADORA || normalized.includes('alexandre')) return PAYMENT_SOURCE_LABELS.transportadora;
+    if (normalized === ADVANCE_PAYER.OTHER) return PAYMENT_SOURCE_LABELS.outro;
     return safeText(value);
+  }
+
+  function isCustomAdvancePayer(value) {
+    return normalizeText(value) === ADVANCE_PAYER.OTHER;
+  }
+
+  function getAdvancePayerLabel(origin, customName = '') {
+    const name = safeText(customName);
+    if (isCustomAdvancePayer(origin) && name) return name;
+    return getPaymentSourceLabel(origin);
+  }
+
+  function getTripAdvancePayerLabel(trip) {
+    return getAdvancePayerLabel(trip?.origemAdiantamento, trip?.nomePagadorAdiantamento);
+  }
+
+  function syncAdvancePayerNameField(form) {
+    const payerSelect = form?.querySelector('[name="origemAdiantamento"]');
+    const nameField = form?.querySelector('.advance-payer-name-field');
+    const nameInput = form?.querySelector('[name="nomePagadorAdiantamento"]');
+    if (!payerSelect || !nameField || !nameInput) return;
+    const isCustom = isCustomAdvancePayer(payerSelect.value);
+    nameField.classList.toggle('hidden', !isCustom);
+    nameInput.required = isCustom;
+    nameInput.setAttribute('aria-hidden', String(!isCustom));
+  }
+
+  function setupAdvancePayerNameField(form) {
+    const payerSelect = form?.querySelector('[name="origemAdiantamento"]');
+    const nameInput = form?.querySelector('[name="nomePagadorAdiantamento"]');
+    if (!payerSelect || !nameInput) return;
+    payerSelect.addEventListener('change', () => {
+      const shouldFocusName = isCustomAdvancePayer(payerSelect.value);
+      syncAdvancePayerNameField(form);
+      if (shouldFocusName) window.setTimeout(() => nameInput.focus(), 0);
+      if (form === els.tripForm) updateTripWhatsAppState();
+    });
+    nameInput.addEventListener('input', () => {
+      if (form === els.tripForm) updateTripWhatsAppState();
+    });
+    syncAdvancePayerNameField(form);
   }
 
   function getFormMoneyValue(formData, names) {
@@ -1250,6 +1320,8 @@
         diarias: nonNegativeMoney(item.diarias ?? item.diariaPrevista ?? item.diariasViagem ?? item.diaria ?? 0),
         ajudantes: nonNegativeMoney(item.ajudantes ?? item.ajudantePrevisto ?? item.ajudantesViagem ?? item.ajudante ?? 0),
         financialModelVersion: Number(item.financialModelVersion || 1),
+        origemAdiantamento: safeText(item.origemAdiantamento),
+        nomePagadorAdiantamento: safeText(item.nomePagadorAdiantamento ?? item.pagadorAdiantamento),
         observacoes: item.observacoes ?? item.observacao ?? '',
         status: item.status ?? 'Planejada',
       })
@@ -1333,7 +1405,7 @@
     }
     const references = getRecordReferenceDetails(type, record.id);
     if (!references.length) return '';
-    return `Não é possível apagar “${getRecordDeleteLabel(type, record)}” porque ele está ligado a: ${formatRecordReferences(references)}. Primeiro, corrija ou apague esses itens vinculados.`;
+    return `Não é possível excluir “${getRecordDeleteLabel(type, record)}” porque ele está ligado a: ${formatRecordReferences(references)}. Primeiro, corrija ou exclua esses itens vinculados.`;
   }
 
   function deleteRecord(type, id) {
@@ -1545,7 +1617,7 @@
       state.pagamentos = state.pagamentos.filter((payment) => payment.id !== existing.id);
       changed = true;
     } else if (amount > 0 && existing) {
-      const origin = getPaymentSourceLabel(trip.origemAdiantamento) || 'Informado na viagem';
+      const origin = getTripAdvancePayerLabel(trip) || 'Informado na viagem';
       if (existing.valor !== amount || existing.origemPagamento !== origin) {
         existing.valor = amount;
         existing.origemPagamento = origin;
@@ -1557,7 +1629,7 @@
         id: uid(),
         viagemId: trip.id,
         tipo: PAYMENT_LABELS[PAYMENT_KIND.ADVANCE],
-        origemPagamento: getPaymentSourceLabel(trip.origemAdiantamento) || 'Informado na viagem',
+        origemPagamento: getTripAdvancePayerLabel(trip) || 'Informado na viagem',
         valor: amount,
         dataPagamento: toDateInputValue(trip.createdAt) || new Date().toISOString().slice(0, 10),
         observacao: 'Adiantamento informado ao cadastrar a viagem.',
@@ -1590,6 +1662,7 @@
 
   function getFieldDisplayValue(field, record) {
     const value = record[field.name];
+    if (field.name === 'origemAdiantamento') return getTripAdvancePayerLabel(record) || '—';
     if (field.display) return field.display(value, record);
     if (field.type === 'money') return formatMoney(value);
     if (field.type === 'date') return formatDate(value);
@@ -1750,7 +1823,7 @@
       <div class="record-actions">
         <button type="button" data-action="view" aria-label="Visualizar ${escapeHtml(accessibleName)}" title="Visualizar registro">👁️ Visualizar</button>
         <button type="button" data-action="edit" aria-label="Editar ${escapeHtml(accessibleName)}" title="Editar registro">✏️ Editar</button>
-        <button type="button" data-action="delete" class="danger-btn" aria-label="Apagar ${escapeHtml(accessibleName)}" title="Apagar registro">🗑️ Apagar</button>
+        <button type="button" data-action="delete" class="danger-btn" aria-label="Excluir ${escapeHtml(accessibleName)}" title="Excluir registro">🗑️ Excluir</button>
       </div>
     `;
     return article;
@@ -2028,7 +2101,8 @@
       adiantamento: els.tripAdvanceInput?.value || '',
       diarias: els.tripDailyInput?.value || '',
       ajudantes: els.tripHelperInput?.value || '',
-      origemAdiantamento: safeText(els.tripForm?.querySelector('[name="origemAdiantamento"]')?.value),
+      origemAdiantamento: safeText(els.tripAdvancePayerSelect?.value) || DEFAULT_ADVANCE_PAYER,
+      nomePagadorAdiantamento: safeText(els.tripAdvancePayerNameInput?.value),
       financialModelVersion: 1,
       observacoes: safeText(els.tripForm?.querySelector('[name="observacoesViagem"]')?.value),
     };
@@ -2053,7 +2127,7 @@
         `Destino: ${carga.destino || '-'}`,
         `Caminhão: ${caminhao ? getTruckLabel(caminhao) : 'A confirmar'}`,
         `Valor combinado: ${formatMoney(finance.combined)}`,
-        `Adiantamento (${getPaymentSourceLabel(trip.origemAdiantamento) || 'a confirmar'}): ${formatMoney(finance.advance)}`,
+        `Adiantamento (${getTripAdvancePayerLabel(trip) || 'a confirmar'}): ${formatMoney(finance.advance)}`,
         `Diárias previstas: ${formatMoney(finance.dailyCost)}`,
         `Ajudante / extra: ${formatMoney(finance.helperCost)}`,
         '',
@@ -2101,7 +2175,7 @@
             <button type="button" id="editRecordBtn" class="secondary-btn">✏️ Editar</button>
             <button type="button" id="saveEditBtn" class="hidden">Salvar edição</button>
             <button type="button" id="cancelEditBtn" class="secondary-btn hidden">Cancelar</button>
-            <button type="button" id="deleteRecordBtn" class="danger-btn">🗑️ Apagar</button>
+            <button type="button" id="deleteRecordBtn" class="danger-btn">🗑️ Excluir</button>
           </div>
         </div>
       `;
@@ -2130,7 +2204,7 @@
     els.cancelEditBtn.classList.toggle('hidden', !isEdit);
     const recordName = modalState.type ? modalState.type.toLowerCase() : 'registro';
     els.editRecordBtn.setAttribute('aria-label', `Editar ${recordName}`);
-    els.deleteRecordBtn.setAttribute('aria-label', `Apagar ${recordName}`);
+    els.deleteRecordBtn.setAttribute('aria-label', `Excluir ${recordName}`);
   }
 
   function renderModalView(record) {
@@ -2169,6 +2243,10 @@
     els.modalContent.innerHTML = `<form id="recordEditForm" class="form-grid">${formFields}${currentFileNote}</form>`;
     ui.editForm = els.modalContent.querySelector('#recordEditForm');
     if (ui.editForm) {
+      if (modalState.type === 'Viagem') {
+        ui.editForm.querySelector('[name="nomePagadorAdiantamento"]')?.closest('label')?.classList.add('advance-payer-name-field');
+        setupAdvancePayerNameField(ui.editForm);
+      }
       ui.editForm.addEventListener('input', markModalDirty);
       ui.editForm.addEventListener('change', markModalDirty);
       ui.editForm.addEventListener('submit', (event) => {
@@ -2277,6 +2355,11 @@
     }
 
     if (modalState.type === 'Viagem') {
+      nextRecord.origemAdiantamento = safeText(nextRecord.origemAdiantamento) || DEFAULT_ADVANCE_PAYER;
+      nextRecord.nomePagadorAdiantamento = safeText(nextRecord.nomePagadorAdiantamento);
+      if (isCustomAdvancePayer(nextRecord.origemAdiantamento) && !nextRecord.nomePagadorAdiantamento) {
+        return alert('Informe o nome da outra pessoa que pagou o adiantamento.');
+      }
       const negativeValue = ['valorFrete', 'valorMotorista', 'adiantamento', 'diarias', 'ajudantes']
         .some((fieldName) => moneyToNumber(nextRecord[fieldName] ?? 0) < 0);
       if (negativeValue) return alert('Os valores financeiros não podem ser negativos.');
@@ -2343,8 +2426,8 @@
     deleteDialogState.type = type;
     deleteDialogState.id = id;
     deleteDialogState.trigger = trigger instanceof HTMLElement ? trigger : null;
-    els.deleteConfirmTitle.textContent = `Apagar ${type.toLowerCase()}?`;
-    els.deleteConfirmMessage.textContent = `Tem certeza que deseja apagar “${getRecordDeleteLabel(type, record)}”? Esta ação não pode ser desfeita.`;
+    els.deleteConfirmTitle.textContent = `Excluir ${type.toLowerCase()}?`;
+    els.deleteConfirmMessage.textContent = `Tem certeza que deseja excluir “${getRecordDeleteLabel(type, record)}”? Esta ação não pode ser desfeita.`;
     els.deleteConfirmOverlay.classList.remove('hidden');
     setDeleteConfirmBusy(false);
     window.setTimeout(() => els.cancelDeleteBtn?.focus(), 0);
@@ -2355,13 +2438,13 @@
     if (!storagePath) return true;
     const client = getSupabaseClient();
     if (!client || !activeCloudUser) {
-      alert('Não foi possível apagar o arquivo privado agora. O documento foi mantido para evitar deixar um arquivo sem registro.');
+      alert('Não foi possível excluir o arquivo privado agora. O documento foi mantido para evitar deixar um arquivo sem registro.');
       return false;
     }
     const { error } = await client.storage.from('documentos-privados').remove([storagePath]);
     if (!error) return true;
-    console.warn('Não foi possível apagar o arquivo privado do documento.', error);
-    alert('Não foi possível apagar o arquivo privado agora. O documento foi mantido para evitar deixar um arquivo sem registro.');
+    console.warn('Não foi possível excluir o arquivo privado do documento.', error);
+    alert('Não foi possível excluir o arquivo privado agora. O documento foi mantido para evitar deixar um arquivo sem registro.');
     return false;
   }
 
@@ -2390,10 +2473,10 @@
       if (openedRecordModal) closeRecordModal(true);
       renderCurrentView();
       updateTripAutofillPreview();
-      announceRecordAction(`${type} apagado com sucesso.`);
+      announceRecordAction(`${type} excluído com sucesso.`);
     } catch (error) {
-      console.warn('Não foi possível apagar o registro.', error);
-      alert('Não foi possível apagar este registro agora. Tente novamente em alguns instantes.');
+      console.warn('Não foi possível excluir o registro.', error);
+      alert('Não foi possível excluir este registro agora. Tente novamente em alguns instantes.');
     } finally {
       setDeleteConfirmBusy(false);
     }
@@ -2620,6 +2703,7 @@
     if (els.tripAdvanceInput) els.tripAdvanceInput.addEventListener('input', () => renderTripFinancialPreview());
     if (els.tripDailyInput) els.tripDailyInput.addEventListener('input', () => renderTripFinancialPreview());
     if (els.tripHelperInput) els.tripHelperInput.addEventListener('input', () => renderTripFinancialPreview());
+    setupAdvancePayerNameField(els.tripForm);
   }
 
   function handleTripSubmit(event) {
@@ -2632,6 +2716,11 @@
     const carga = state.cargas.find((item) => item.id === cargaId);
     if (!carga) return alert('A carga selecionada não foi encontrada. Atualize a página e tente novamente.');
     const freightInput = data.get('valorFreteViagem');
+    const origemAdiantamento = safeText(data.get('origemAdiantamento')) || DEFAULT_ADVANCE_PAYER;
+    const nomePagadorAdiantamento = safeText(data.get('nomePagadorAdiantamento'));
+    if (isCustomAdvancePayer(origemAdiantamento) && !nomePagadorAdiantamento) {
+      return alert('Informe o nome da outra pessoa que pagou o adiantamento.');
+    }
     let item = {
       id: uid(),
       cargaId,
@@ -2643,7 +2732,8 @@
       adiantamento: moneyToNumber(String(data.get('adiantamento') || 0)),
       diarias: getFormMoneyValue(data, ['diariasViagem', 'diariaPrevista', 'diarias']),
       ajudantes: getFormMoneyValue(data, ['ajudantesViagem', 'ajudantePrevisto', 'ajudantes']),
-      origemAdiantamento: safeText(data.get('origemAdiantamento')),
+      origemAdiantamento,
+      nomePagadorAdiantamento,
       financialModelVersion: FINANCIAL_MODEL_VERSION,
       status: safeText(data.get('statusViagem')),
       observacoes: safeText(data.get('observacoesViagem')),
@@ -2663,6 +2753,7 @@
     saveState('viagens');
     if (initialAdvanceChanged) saveState('pagamentos');
     event.currentTarget.reset();
+    syncAdvancePayerNameField(event.currentTarget);
     renderCurrentView();
     updateTripAutofillPreview();
     scrollToElement(activeQuickFilter || currentSearchQuery ? ui.searchPanel : els.recordsSection);
